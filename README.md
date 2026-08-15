@@ -121,3 +121,19 @@ The service should be placed behind TLS and an upstream reverse proxy. Set a lon
 ## License
 
 MIT
+
+## Single-service Render deployment
+
+The repository also supports a single public Docker Web Service deployment. In this mode, the container starts SearXNG on `127.0.0.1:8081` and starts Web-Kit on Render’s public port `10000`. Web-Kit calls SearXNG locally, so no separate Render private service is required.
+
+The combined deployment is defined by `render.yaml` and uses the combined `Dockerfile`. Deploy the Blueprint from the Render dashboard by selecting **New > Blueprint**, connecting this repository, and applying the generated `web-kit` service. Render generates `WEBKIT_API_TOKEN` automatically when the Blueprint is applied.
+
+For a manual Render Web Service, set the runtime to Docker, use `./Dockerfile`, set the health check path to `/healthz`, and add these variables:
+
+```env
+WEBKIT_BIND_ADDR=0.0.0.0:10000
+WEBKIT_SEARXNG_URL=http://127.0.0.1:8081
+WEBKIT_API_TOKEN=generate-a-secret-in-render
+```
+
+The combined mode is simpler and can fit a no-budget deployment, but Web-Kit and SearXNG share one container, one CPU allocation, and one memory allocation. If either process stops, the service is restarted together. For higher traffic, split SearXNG into a separate private service.
