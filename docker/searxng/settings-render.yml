@@ -1,0 +1,28 @@
+use_default_settings: true
+
+server:
+  bind_address: "127.0.0.1"
+  port: 8081
+  secret_key: "change-this-secret-key-in-production"
+  limiter: false
+  image_proxy: false
+
+search:
+  formats:
+    - html
+    - json
+  safe_search: 1
+  autocomplete: ""
+  default_lang: "en"
+
+engines:
+  - name: duckduckgo
+    disabled: false
+  - name: brave
+    disabled: false
+  - name: mojeek
+    disabled: false
+  - name: qwant
+    disabled: false
+  - name: wikipedia
+    disabled: false

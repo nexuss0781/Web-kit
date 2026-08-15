@@ -1,0 +1,7 @@
+target
+.git
+.env
+*.zip
+README.md
+openapi.yaml
+screenshots

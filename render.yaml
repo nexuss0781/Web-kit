@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: web-kit
+    runtime: docker
+    repo: https://github.com/nexuss0781/Web-kit
+    branch: master
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: WEBKIT_BIND_ADDR
+        value: 0.0.0.0:10000
+      - key: WEBKIT_SEARXNG_URL
+        value: http://127.0.0.1:8081
+      - key: WEBKIT_API_TOKEN
+        generateValue: true
+      - key: WEBKIT_USER_AGENT
+        value: Web-Kit/0.1 (+https://github.com/nexuss0781/Web-kit)
+      - key: WEBKIT_MAX_BODY_BYTES
+        value: "5242880"
+      - key: WEBKIT_MAX_REDIRECTS
+        value: "5"
+      - key: WEBKIT_REQUEST_TIMEOUT_MS
+        value: "12000"
+      - key: RUST_LOG
+        value: web_kit=info,tower_http=info
