@@ -1,0 +1,37 @@
+services:
+  webkit-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${WEBKIT_PORT:-8080}:8080"
+    environment:
+      WEBKIT_BIND_ADDR: 0.0.0.0:8080
+      WEBKIT_API_TOKEN: ${WEBKIT_API_TOKEN:-}
+      WEBKIT_SEARXNG_URL: http://searxng:8080
+      WEBKIT_USER_AGENT: ${WEBKIT_USER_AGENT:-Web-Kit/0.1 (+https://github.com/nexus-agents/web-kit)}
+      WEBKIT_MAX_BODY_BYTES: ${WEBKIT_MAX_BODY_BYTES:-5242880}
+      WEBKIT_MAX_REDIRECTS: ${WEBKIT_MAX_REDIRECTS:-5}
+      WEBKIT_REQUEST_TIMEOUT_MS: ${WEBKIT_REQUEST_TIMEOUT_MS:-12000}
+      RUST_LOG: ${RUST_LOG:-web_kit=info,tower_http=info}
+    depends_on:
+      - searxng
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+
+  searxng:
+    image: ${SEARXNG_IMAGE:-searxng/searxng:latest}
+    restart: unless-stopped
+    environment:
+      BASE_URL: ${SEARXNG_BASE_URL:-http://localhost:8080/}
+      INSTANCE_NAME: ${SEARXNG_INSTANCE_NAME:-Web-Kit Search}
+    volumes:
+      - ./docker/searxng:/etc/searxng:rw
+    expose:
+      - "8080"
+    security_opt:
+      - no-new-privileges:true
