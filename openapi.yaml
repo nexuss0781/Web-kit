@@ -1,0 +1,182 @@
+openapi: 3.1.0
+info:
+  title: Web-Kit API
+  version: 0.1.0
+  description: Free-first multi-provider web search and safe page fetching for Nexus Agents.
+servers:
+  - url: http://localhost:8080
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      security: []
+      operationId: health
+      responses:
+        '200':
+          description: Service is alive.
+  /readyz:
+    get:
+      security: []
+      operationId: readiness
+      responses:
+        '200':
+          description: Service is ready.
+  /v1/providers:
+    get:
+      operationId: listProviders
+      responses:
+        '200':
+          description: Configured provider IDs and capabilities.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProviderInfo'
+  /v1/search:
+    get:
+      security:
+        - bearerAuth: []
+      operationId: searchGet
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 1000 }
+        - in: query
+          name: providers
+          schema: { type: string, example: 'searxng,duckduckgo,mojeek' }
+        - in: query
+          name: mode
+          schema: { type: string, enum: [single, fallback, fanout], default: fanout }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 10 }
+      responses:
+        '200':
+          description: Normalized ranked search response.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchResponse' }
+    post:
+      security:
+        - bearerAuth: []
+      operationId: searchPost
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SearchRequest' }
+      responses:
+        '200':
+          description: Normalized ranked search response.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchResponse' }
+  /v1/fetch:
+    get:
+      operationId: fetchGet
+      parameters:
+        - in: query
+          name: url
+          required: true
+          schema: { type: string, format: uri }
+        - in: query
+          name: mode
+          schema: { type: string, enum: [raw, text, markdown, metadata], default: markdown }
+      responses:
+        '200':
+          description: Normalized fetched document.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FetchResponse' }
+    post:
+      operationId: fetchPost
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FetchRequest' }
+      responses:
+        '200':
+          description: Normalized fetched document.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FetchResponse' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    SearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query: { type: string, minLength: 1, maxLength: 1000 }
+        providers: { type: array, items: { type: string } }
+        mode: { type: string, enum: [single, fallback, fanout], default: fanout }
+        limit: { type: integer, minimum: 1, maximum: 100, default: 10 }
+        language: { type: string }
+        safe_search: { type: string }
+        time_range: { type: string }
+        domains: { type: array, items: { type: string } }
+    SearchResponse:
+      type: object
+      required: [request_id, query, mode, results, providers, warnings, timing]
+      properties:
+        request_id: { type: string }
+        query: { type: string }
+        mode: { type: string }
+        results: { type: array, items: { $ref: '#/components/schemas/SearchResult' } }
+        providers: { type: object, additionalProperties: { $ref: '#/components/schemas/ProviderStatus' } }
+        warnings: { type: array, items: { type: string } }
+        timing: { type: object }
+    SearchResult:
+      type: object
+      properties:
+        id: { type: string }
+        rank: { type: integer }
+        title: { type: string }
+        url: { type: string, format: uri }
+        canonical_url: { type: string, format: uri, nullable: true }
+        snippet: { type: string, nullable: true }
+        providers: { type: array, items: { type: string } }
+        provider_ranks: { type: object, additionalProperties: { type: integer } }
+        score: { type: number }
+    ProviderInfo:
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string }
+        enabled: { type: boolean }
+        capabilities: { type: array, items: { type: string } }
+    ProviderStatus:
+      type: object
+      properties:
+        status: { type: string }
+        latency_ms: { type: integer }
+        result_count: { type: integer }
+        error: { type: string, nullable: true }
+    FetchRequest:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string, format: uri }
+        mode: { type: string, enum: [raw, text, markdown, metadata], default: markdown }
+        render: { type: string, enum: [never, auto, always], default: never }
+        timeout_ms: { type: integer, maximum: 12000 }
+        max_bytes: { type: integer, maximum: 5242880 }
+        follow_redirects: { type: boolean, default: true }
+        respect_robots: { type: boolean, default: true }
+        include_links: { type: boolean, default: true }
+        include_images: { type: boolean, default: false }
+    FetchResponse:
+      type: object
+      properties:
+        request_id: { type: string }
+        retrieval: { type: object }
+        document: { type: object }
+        warnings: { type: array, items: { type: string } }
+        timing: { type: object }
