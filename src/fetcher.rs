@@ -11,12 +11,23 @@ use reqwest::{header, Client, StatusCode};
 use scraper::{Html, Selector};
 use sha2::{Digest, Sha256};
 use std::{sync::Arc, time::Instant};
+use url::Url;
 
 pub async fn fetch_url(
     request: FetchRequest,
     config: Arc<Config>,
     client: Client,
     request_id: String,
+) -> Result<FetchResponse> {
+    fetch_url_impl(request, config, client, request_id, true).await
+}
+
+async fn fetch_url_impl(
+    request: FetchRequest,
+    config: Arc<Config>,
+    client: Client,
+    request_id: String,
+    validate_urls: bool,
 ) -> Result<FetchResponse> {
     let started = Instant::now();
     let original_url = request.url.clone();
@@ -34,7 +45,11 @@ pub async fn fetch_url(
             .min(config.request_timeout_ms),
     );
 
-    let mut current = validate_public_url(&request.url).await?;
+    let mut current = if validate_urls {
+        validate_public_url(&request.url).await?
+    } else {
+        Url::parse(&request.url).map_err(|error| anyhow!("invalid test URL: {error}"))?
+    };
     let mut redirects = 0usize;
     let mut warnings = Vec::new();
     if request.respect_robots.unwrap_or(true) {
@@ -62,7 +77,11 @@ pub async fn fetch_url(
                 let next = current
                     .join(location)
                     .map_err(|e| anyhow!("invalid redirect location: {e}"))?;
-                current = validate_public_url(next.as_str()).await?;
+                current = if validate_urls {
+                    validate_public_url(next.as_str()).await?
+                } else {
+                    next
+                };
                 redirects += 1;
                 continue;
             }
@@ -243,4 +262,254 @@ fn hex_digest(body: &[u8]) -> String {
 #[allow(dead_code)]
 fn _status_is_success(status: StatusCode) -> bool {
     status.is_success()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fetch_url_impl, Config};
+    use crate::models::{FetchMode, FetchRequest};
+    use axum::{http::header, response::Redirect, routing::get, Router};
+    use reqwest::Client;
+    use std::sync::Arc;
+    use tokio::net::TcpListener;
+
+    async fn fixture_app() -> String {
+        let app = Router::new()
+            .route(
+                "/page",
+                get(|| async {
+                    (
+                        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                        r#"<!doctype html><html lang="en"><head><title>Fixture title</title><meta name="description" content="Fixture description"><link rel="canonical" href="https://canonical.example/page"></head><body><h1>Heading</h1><p>Hello <strong>world</strong>.</p><ul><li>One</li><li>Two</li></ul><blockquote>Quoted text</blockquote><pre>let x = 1;</pre><a href="/next">Next</a><img src="/image.png"></body></html>"#,
+                    )
+                }),
+            )
+            .route("/redirect", get(|| async { Redirect::temporary("/page") }))
+            .route(
+                "/large",
+                get(|| async {
+                    (
+                        [(header::CONTENT_TYPE, "text/plain")],
+                        "0123456789012345678901234567890123456789",
+                    )
+                }),
+            );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{}", address)
+    }
+
+    fn config(max_body_bytes: usize, max_redirects: usize) -> Arc<Config> {
+        Arc::new(Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            api_token: None,
+            searxng_url: "http://127.0.0.1:1".to_string(),
+            user_agent: "Web-Kit-fetch-test/1.0".to_string(),
+            max_body_bytes,
+            max_redirects,
+            request_timeout_ms: 1000,
+        })
+    }
+
+    fn client() -> Client {
+        Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn extracts_metadata_text_markdown_links_images_and_hash() {
+        let base = fixture_app().await;
+        let response = fetch_url_impl(
+            FetchRequest {
+                url: format!("{base}/page"),
+                mode: Some(FetchMode::Markdown),
+                render: None,
+                timeout_ms: Some(9000),
+                max_bytes: Some(10_000),
+                follow_redirects: Some(true),
+                respect_robots: Some(true),
+                include_links: Some(true),
+                include_images: Some(true),
+            },
+            config(10_000, 2),
+            client(),
+            "fetch-test".to_string(),
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.request_id, "fetch-test");
+        assert_eq!(response.retrieval.status_code, 200);
+        assert_eq!(response.retrieval.redirects, 0);
+        assert_eq!(response.document.title.as_deref(), Some("Fixture title"));
+        assert_eq!(
+            response.document.description.as_deref(),
+            Some("Fixture description")
+        );
+        assert_eq!(
+            response.document.canonical_url.as_deref(),
+            Some("https://canonical.example/page")
+        );
+        assert_eq!(response.document.language.as_deref(), Some("en"));
+        assert!(response
+            .document
+            .markdown
+            .as_deref()
+            .unwrap()
+            .contains("# Heading"));
+        assert!(response
+            .document
+            .markdown
+            .as_deref()
+            .unwrap()
+            .contains("- One"));
+        assert!(response
+            .document
+            .markdown
+            .as_deref()
+            .unwrap()
+            .contains("> Quoted text"));
+        assert!(response.document.links.iter().any(|link| link == "/next"));
+        assert!(response
+            .document
+            .images
+            .iter()
+            .any(|image| image == "/image.png"));
+        assert_eq!(response.document.sha256.len(), 64);
+        assert!(response
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("robots")));
+
+        let text_response = fetch_url_impl(
+            FetchRequest {
+                url: format!("{base}/page"),
+                mode: Some(FetchMode::Text),
+                render: None,
+                timeout_ms: None,
+                max_bytes: None,
+                follow_redirects: None,
+                respect_robots: Some(false),
+                include_links: Some(false),
+                include_images: Some(false),
+            },
+            config(10_000, 2),
+            client(),
+            "text-test".to_string(),
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(text_response
+            .document
+            .text
+            .as_deref()
+            .unwrap()
+            .contains("Hello world"));
+        assert!(text_response.document.links.is_empty());
+        assert!(text_response.document.images.is_empty());
+        assert!(text_response.warnings.is_empty());
+
+        let metadata_response = fetch_url_impl(
+            FetchRequest {
+                url: format!("{base}/page"),
+                mode: Some(FetchMode::Metadata),
+                render: None,
+                timeout_ms: None,
+                max_bytes: None,
+                follow_redirects: None,
+                respect_robots: None,
+                include_links: None,
+                include_images: None,
+            },
+            config(10_000, 2),
+            client(),
+            "metadata-test".to_string(),
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(metadata_response.document.text.is_none());
+        assert!(metadata_response.document.markdown.is_none());
+        assert!(metadata_response.document.html.is_none());
+    }
+
+    #[tokio::test]
+    async fn follows_redirects_and_records_count() {
+        let base = fixture_app().await;
+        let response = fetch_url_impl(
+            FetchRequest {
+                url: format!("{base}/redirect"),
+                mode: Some(FetchMode::Raw),
+                render: None,
+                timeout_ms: None,
+                max_bytes: None,
+                follow_redirects: Some(true),
+                respect_robots: Some(false),
+                include_links: None,
+                include_images: None,
+            },
+            config(10_000, 2),
+            client(),
+            "redirect-test".to_string(),
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.retrieval.redirects, 1);
+        assert!(response.document.html.unwrap().contains("Fixture title"));
+
+        let no_follow = fetch_url_impl(
+            FetchRequest {
+                url: format!("{base}/redirect"),
+                mode: Some(FetchMode::Metadata),
+                render: None,
+                timeout_ms: None,
+                max_bytes: None,
+                follow_redirects: Some(false),
+                respect_robots: Some(false),
+                include_links: None,
+                include_images: None,
+            },
+            config(10_000, 2),
+            client(),
+            "no-redirect-test".to_string(),
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(no_follow.retrieval.status_code, 307);
+        assert_eq!(no_follow.retrieval.redirects, 0);
+    }
+
+    #[tokio::test]
+    async fn enforces_max_body_bytes_and_clamps_request_limits() {
+        let base = fixture_app().await;
+        let error = fetch_url_impl(
+            FetchRequest {
+                url: format!("{base}/large"),
+                mode: Some(FetchMode::Raw),
+                render: None,
+                timeout_ms: None,
+                max_bytes: Some(10_000),
+                follow_redirects: None,
+                respect_robots: Some(false),
+                include_links: None,
+                include_images: None,
+            },
+            config(16, 2),
+            client(),
+            "limit-test".to_string(),
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("max_bytes"));
+    }
 }

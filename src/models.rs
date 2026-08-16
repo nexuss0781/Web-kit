@@ -155,3 +155,41 @@ pub struct ErrorResponse {
     pub message: String,
     pub request_id: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{FetchMode, RenderMode, SearchMode};
+
+    #[test]
+    fn search_mode_defaults_to_fanout_and_serializes_snake_case() {
+        assert!(matches!(SearchMode::default(), SearchMode::Fanout));
+        assert_eq!(
+            serde_json::to_string(&SearchMode::Single).unwrap(),
+            "\"single\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SearchMode::Fallback).unwrap(),
+            "\"fallback\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SearchMode::Fanout).unwrap(),
+            "\"fanout\""
+        );
+    }
+
+    #[test]
+    fn fetch_and_render_modes_have_expected_defaults_and_wire_values() {
+        assert!(matches!(FetchMode::default(), FetchMode::Markdown));
+        assert!(matches!(RenderMode::default(), RenderMode::Never));
+        assert_eq!(serde_json::to_string(&FetchMode::Raw).unwrap(), "\"raw\"");
+        assert_eq!(serde_json::to_string(&FetchMode::Text).unwrap(), "\"text\"");
+        assert_eq!(
+            serde_json::to_string(&FetchMode::Metadata).unwrap(),
+            "\"metadata\""
+        );
+        assert_eq!(
+            serde_json::to_string(&RenderMode::Always).unwrap(),
+            "\"always\""
+        );
+    }
+}
