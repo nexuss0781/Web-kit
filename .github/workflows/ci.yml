@@ -14,5 +14,6 @@ jobs:
           toolchain: stable
           components: rustfmt
       - run: cargo fmt --all -- --check
+      - run: sh -n docker/combined-entrypoint.sh
       - run: cargo test --all-targets
       - run: cargo build --release

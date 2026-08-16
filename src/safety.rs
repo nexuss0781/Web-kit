@@ -83,3 +83,30 @@ mod tests {
         assert!(reject_private_ip("fc00::1".parse().unwrap()).is_err());
     }
 }
+
+#[cfg(test)]
+mod extended_tests {
+    use super::reject_private_ip;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn rejects_additional_reserved_and_multicast_addresses() {
+        for ip in [
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            IpAddr::V4(Ipv4Addr::new(224, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(192, 0, 0, 9)),
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+            IpAddr::V6("ff02::1".parse().unwrap()),
+            IpAddr::V6("fe80::1".parse().unwrap()),
+        ] {
+            assert!(reject_private_ip(ip).is_err(), "{ip}");
+        }
+    }
+
+    #[test]
+    fn accepts_a_public_documentation_address() {
+        assert!(reject_private_ip("93.184.216.34".parse().unwrap()).is_ok());
+        assert!(reject_private_ip("2001:4860:4860::8888".parse().unwrap()).is_ok());
+    }
+}

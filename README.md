@@ -137,3 +137,18 @@ WEBKIT_API_TOKEN=generate-a-secret-in-render
 ```
 
 The combined mode is simpler and can fit a no-budget deployment, but Web-Kit and SearXNG share one container, one CPU allocation, and one memory allocation. If either process stops, the service is restarted together. For higher traffic, split SearXNG into a separate private service.
+
+## Test coverage
+
+Web-Kit includes deterministic unit, API integration, fetcher, security, and deployment-contract tests. The API integration suite uses an in-process SearXNG-compatible fixture and never depends on external search providers.
+
+The suite covers public health and readiness routes, bearer authentication and trusted-network mode, provider discovery, GET and POST search, `single`, `fallback`, and `fanout` modes, query aliases and filters, provider errors, deduplication, canonical URLs, stable result IDs, fused ranking, HTML metadata extraction, text and Markdown conversion, link and image controls, raw and metadata modes, redirects, body-size limits, SSRF blocking, model wire formats, the Render Blueprint, the combined Dockerfile, the SearXNG readiness entrypoint, the OpenAPI route contract, and the CI workflow.
+
+Run the full verification locally with:
+
+```bash
+cargo fmt --all -- --check
+sh -n docker/combined-entrypoint.sh
+cargo test --all-targets
+cargo build --release
+```

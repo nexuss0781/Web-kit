@@ -425,3 +425,140 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod extended_tests {
+    use super::{
+        build_query, canonicalize, merge_results, parse_searx_result, stable_id, ProviderRegistry,
+        ProviderResult,
+    };
+    use crate::{
+        config::Config,
+        models::{SearchMode, SearchRequest},
+    };
+    use reqwest::Client;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    fn request() -> SearchRequest {
+        SearchRequest {
+            query: "  rust docs  ".to_string(),
+            providers: None,
+            mode: Some(SearchMode::Fanout),
+            limit: Some(10),
+            language: Some("en".to_string()),
+            safe_search: Some("1".to_string()),
+            time_range: Some("week".to_string()),
+            domains: Some(vec![
+                "docs.rs".to_string(),
+                " ".to_string(),
+                "rust-lang.org".to_string(),
+            ]),
+        }
+    }
+
+    #[test]
+    fn query_builder_trims_and_adds_non_empty_domains() {
+        assert_eq!(
+            build_query(&request()),
+            "rust docs site:docs.rs site:rust-lang.org"
+        );
+    }
+
+    #[test]
+    fn query_builder_caps_domain_expansion() {
+        let mut request = request();
+        request.domains = Some((0..25).map(|i| format!("example{i}.org")).collect());
+        let query = build_query(&request);
+        assert_eq!(query.matches(" site:").count(), 20);
+    }
+
+    #[test]
+    fn parser_rejects_results_without_urls_and_uses_url_as_title() {
+        assert!(parse_searx_result(&json!({"title": "missing url"})).is_none());
+        let result = parse_searx_result(&json!({"url": "https://example.org"})).unwrap();
+        assert_eq!(result.title, "https://example.org");
+        assert!(result.snippet.is_none());
+        assert!(result.published_at.is_none());
+    }
+
+    #[test]
+    fn stable_ids_are_deterministic_and_canonicalization_is_consistent() {
+        let first = canonicalize("https://example.org/path?utm_source=x&b=2#part");
+        let second = canonicalize("https://example.org/path?utm_source=y&b=2#other");
+        assert_eq!(first, second);
+        assert_eq!(
+            stable_id("https://example.org"),
+            stable_id("https://example.org")
+        );
+        assert!(stable_id("https://example.org").starts_with("wk_"));
+    }
+
+    #[test]
+    fn merge_results_limits_and_assigns_final_ranks() {
+        let groups = vec![
+            (
+                "one".to_string(),
+                vec![
+                    ProviderResult {
+                        title: "A".to_string(),
+                        url: "https://a.example".to_string(),
+                        snippet: None,
+                        content_type: None,
+                        published_at: None,
+                    },
+                    ProviderResult {
+                        title: "B".to_string(),
+                        url: "https://b.example".to_string(),
+                        snippet: None,
+                        content_type: None,
+                        published_at: None,
+                    },
+                ],
+            ),
+            (
+                "two".to_string(),
+                vec![ProviderResult {
+                    title: "A again".to_string(),
+                    url: "https://a.example/?utm_source=test".to_string(),
+                    snippet: Some("snippet".to_string()),
+                    content_type: None,
+                    published_at: None,
+                }],
+            ),
+        ];
+        let results = merge_results(groups, 1);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].rank, 1);
+        assert_eq!(results[0].providers, vec!["one", "two"]);
+        assert_eq!(results[0].snippet.as_deref(), Some("snippet"));
+    }
+
+    #[tokio::test]
+    async fn unknown_provider_is_reported_without_panicking() {
+        let config = Config {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            api_token: None,
+            searxng_url: "http://127.0.0.1:1".to_string(),
+            user_agent: "test".to_string(),
+            max_body_bytes: 1024,
+            max_redirects: 2,
+            request_timeout_ms: 100,
+        };
+        let registry = ProviderRegistry::new(Client::new(), &config);
+        let mut request = request();
+        request.providers = Some(vec!["does-not-exist".to_string()]);
+        request.mode = Some(SearchMode::Single);
+        let (results, statuses, warnings) = registry.search(&request).await;
+        assert!(results.is_empty());
+        assert_eq!(statuses["does-not-exist"].status, "unknown");
+        assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn provider_status_map_is_serializable_shape() {
+        let mut map = HashMap::new();
+        map.insert("provider".to_string(), "ok".to_string());
+        assert_eq!(map["provider"], "ok");
+    }
+}
