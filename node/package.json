@@ -1,0 +1,19 @@
+{
+  "name": "web-kit-node",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Web-Kit API on Node, for hosts that run Node and cannot run the Rust build.",
+  "type": "module",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ]
+}
