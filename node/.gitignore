@@ -1,0 +1,4 @@
+
+# Wasmer deployment: the manifest is committed, its secrets are not.
+.env.deploy
+.env*
