@@ -114,6 +114,22 @@ The renderer is only asked about a URL the local path has already agreed to
 fetch: the address is checked and `robots.txt` is obeyed first, so a renderer
 never becomes a way to reach a host this service would have refused.
 
+### Remote rendering and who resolves the name
+
+Every other request here resolves a name once, checks the address, and dials
+exactly that address. `render` cannot: the request is made by Firecrawl, from
+their network, resolving the name themselves. The address check proves the name
+was public when *we* asked, not when *they* ask.
+
+This does not put this deployment at risk. Nothing here dials the rebound
+address, so our own private space stays private. What is exposed is Firecrawl's
+network, which they filter themselves.
+
+`WEBKIT_ALLOW_REMOTE_RENDER=0` refuses to hand a caller-named URL to the
+renderer. `render: always` then returns the page as the server sent it with a
+warning naming the switch, and `render: auto` simply does not escalate. Unset
+means on, because rendering is the reason the key is there.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -150,8 +166,15 @@ wasmer deploy --non-interactive --build-remote
 
 ## Tests
 
-`npm test` runs 73 tests and touches no network. Providers are stubbed against
-a local server, and the fetch tests assert the refusals rather than pulling
-pages down, which is the behaviour worth pinning. The one thing a hermetic suite
-cannot prove is that seven upstream APIs still answer; `wasmer app logs` and a
-live search are where that is checked.
+`npm test` runs 75 tests. Providers are stubbed against a local server, and the
+fetch tests assert refusals rather than pulling pages down, which is the
+behaviour worth pinning.
+
+One test is not hermetic: `pinned.test.js` resolves `example.com` to prove
+`resolvePublic` hands back an address rather than a name. A DNS lookup happens
+there and in the Firecrawl render tests that use real URLs as their subject. It
+is a lookup, not a fetch, and it needs a network only if DNS is unavailable --
+so this suite is not fully offline, and saying otherwise would be wrong.
+
+The one thing no suite can prove is that seven upstream APIs still answer;
+`wasmer app logs` and a live search are where that is checked.

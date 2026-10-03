@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import { postJson, withDomains, search, scrape } from '../src/firecrawl.js';
 import firecrawl, { rows } from '../src/providers/firecrawl.js';
 import { looksUnrendered, boundText, fetchDocument } from '../src/fetcher.js';
+import { loadConfig } from '../src/config.js';
 import { allProviders, enabledProviders } from '../src/providers/index.js';
 import { normalise } from '../src/search.js';
 
@@ -321,4 +322,54 @@ test('a scrape asks for the main content as markdown, and reuses a copy only as 
   } finally {
     await upstream.close();
   }
+});
+test('a deployment that forbids remote rendering never hands the URL over', async () => {
+  // Everything else here resolves a name once and dials the address it checked.
+  // Rendering cannot: Firecrawl resolve it again, from their network. So when a
+  // deployment switches this off, the URL must not leave at all -- not even to a
+  // renderer that would have answered politely.
+  let asked = false;
+  const upstream = await serve((_req, res) => {
+    asked = true;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: { markdown: '# rendered by firecrawl', metadata: { statusCode: 200 } } }));
+  });
+  const blocked = {
+    firecrawlApiKey: 'fc-k',
+    firecrawlApiUrl: upstream.base,
+    allowRemoteRender: false,
+  };
+
+  try {
+    const always = await fetchDocument('https://example.com/', { render: 'always' }, blocked);
+
+    assert.equal(asked, false, 'render: always must not reach the renderer');
+    assert.notEqual(always.document.markdown, '# rendered by firecrawl');
+    assert.ok(
+      always.warnings.some((w) => /remote rendering is disabled/.test(w)),
+      'and the caller is told why it did not get a browser',
+    );
+
+    // auto must not escalate either. The page here is not a script shell, so
+    // this asserts the switch is consulted before the heuristic rather than
+    // after it: the renderer is never asked, on any path.
+    const auto = await fetchDocument('https://example.com/', { render: 'auto' }, blocked);
+    assert.equal(asked, false, 'render: auto must not consult the renderer when rendering is off');
+  } finally {
+    await upstream.close();
+  }
+});
+
+test('the kill switch reads as a switch, not a truthiness trap', () => {
+  // `WEBKIT_ALLOW_REMOTE_RENDER=0` has to mean off. Anything else here would
+  // leave a deployment that believes it is closed quietly open.
+  assert.equal(loadConfig({ WEBKIT_ALLOW_REMOTE_RENDER: '0' }).allowRemoteRender, false);
+  assert.equal(loadConfig({ WEBKIT_ALLOW_REMOTE_RENDER: 'false' }).allowRemoteRender, false);
+  assert.equal(loadConfig({ WEBKIT_ALLOW_REMOTE_RENDER: 'off' }).allowRemoteRender, false);
+  assert.equal(loadConfig({ WEBKIT_ALLOW_REMOTE_RENDER: 'no' }).allowRemoteRender, false);
+  assert.equal(loadConfig({ WEBKIT_ALLOW_REMOTE_RENDER: '1' }).allowRemoteRender, true);
+  assert.equal(loadConfig({ WEBKIT_ALLOW_REMOTE_RENDER: 'true' }).allowRemoteRender, true);
+
+  // Unset means on: rendering is the reason the key is there at all.
+  assert.equal(loadConfig({}).allowRemoteRender, true);
 });
