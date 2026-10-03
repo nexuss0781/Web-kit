@@ -18,6 +18,11 @@ function integer(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function bool(value, fallback) {
+  if (value === undefined || value === '') return fallback;
+  return !/^(0|false|no|off)$/i.test(value);
+}
+
 export function loadConfig(env = process.env) {
   return {
     // Wasmer injects PORT and expects a numeric port passed separately from the
@@ -42,6 +47,24 @@ export function loadConfig(env = process.env) {
     // How old a reused copy of a page may be, in ms. 0 forces a fresh read,
     // which costs more and is only right for something time sensitive.
     firecrawlMaxAge: integer(env.FIRECRAWL_MAX_AGE_MS, 172_800_000),
+    /**
+     * Whether Firecrawl may fetch a caller-named URL in its own cloud.
+     *
+     * Everything else in this service resolves a name once, checks the address
+     * and dials exactly that address. Rendering cannot: the request is made by
+     * Firecrawl, from their network, resolving the name themselves. So the check
+     * above proves the name was public when we asked, not when they ask, and a
+     * name that answers differently the second time is not covered by it.
+     *
+     * This does not put *this* deployment at risk -- nothing here dials the
+     * rebound address, so our own private space stays private. What it exposes
+     * is Firecrawl's network, which they filter themselves.
+     *
+     * Set WEBKIT_ALLOW_REMOTE_RENDER=0 to refuse remote rendering of
+     * caller-named URLs outright. `render: auto` then simply reports unrendered
+     * rather than escalating, and nothing breaks.
+     */
+    allowRemoteRender: bool(env.WEBKIT_ALLOW_REMOTE_RENDER, true),
 
     maxBodyBytes: integer(env.WEBKIT_MAX_BODY_BYTES, 5_242_880),
     maxRedirects: integer(env.WEBKIT_MAX_REDIRECTS, 5),

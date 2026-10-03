@@ -216,9 +216,25 @@ export async function fetchDocument(rawUrl, userOptions = {}, config = {}) {
   // requests from this service's instructions, so it is never asked to visit a
   // host or a scheme the local path would have refused.
   const canRender = Boolean(config.firecrawlApiKey);
+  // Rendering hands the URL to Firecrawl, who resolve the name again from their
+  // own network, so the address checked above is not the address they would use.
+  // When that is switched off the answer is the page as sent, never a failure:
+  // a caller who asked for a rendered page gets the unrendered one and a reason.
+  // Compared against `false` rather than tested for truth, because this is an
+  // opt-out: absent means on, which is what loadConfig defaults to. Testing for
+  // truth would let a hand-built config with the key missing read as a
+  // deployment that had chosen to be closed.
+  const mayRender = canRender && config.allowRemoteRender !== false;
+  const renderRefused = canRender && config.allowRemoteRender === false
+    ? 'remote rendering is disabled on this deployment; set WEBKIT_ALLOW_REMOTE_RENDER=1 to allow it'
+    : null;
+
   if (options.render === 'always') {
-    if (!canRender) {
-      warnings.push('render was requested but FIRECRAWL_API_KEY is not set; the page is returned as the server sent it');
+    if (!mayRender) {
+      warnings.push(
+        renderRefused
+          ?? 'render was requested but FIRECRAWL_API_KEY is not set; the page is returned as the server sent it',
+      );
     } else {
       return renderWithFirecrawl(first.href, options, config, warnings, agent);
     }
@@ -244,6 +260,9 @@ export async function fetchDocument(rawUrl, userOptions = {}, config = {}) {
     response = await pinnedGet(current, {
       timeoutMs: remaining,
       maxBytes: options.max_bytes,
+      // Only a test supplies this. Left out, pinnedGet resolves the name itself
+      // and checks every answer, which is the whole defence.
+      ...(config.resolve ? { resolve: config.resolve } : {}),
       headers: {
         'user-agent': agent,
         accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5',
@@ -342,7 +361,7 @@ export async function fetchDocument(rawUrl, userOptions = {}, config = {}) {
   // page turns out to have been a shell. That keeps a rendered page the exception
   // rather than a tax on every fetch, and a page that is merely short is never
   // mistaken for one.
-  if (options.render === 'auto' && canRender) {
+  if (options.render === 'auto' && mayRender) {
     const textish = document.markdown ?? document.text ?? '';
     if (looksUnrendered(html, textish.length)) {
       try {
