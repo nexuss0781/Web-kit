@@ -1,20 +1,26 @@
 /**
  * The provider registry.
  *
- * Everything here is a free, keyless, official API. That is a deliberate filter
- * rather than an accident: the public SearXNG network turns out to refuse JSON
- * from most callers and rate limits the rest, so a service that leans on it
+ * Almost everything here is a free, keyless, official API. That is a deliberate
+ * filter rather than an accident: the public SearXNG network turns out to refuse
+ * JSON from most callers and rate limits the rest, so a service that leans on it
  * works on the author's machine and nowhere else. These endpoints answer.
+ *
+ * The exception is firecrawl, which needs a key. It is there because the others
+ * are all vertical indexes and none of them can answer a general question; it
+ * stays out of the way until FIRECRAWL_API_KEY is set. The same key is what
+ * renders JavaScript for /v1/fetch, so one credential buys both.
  */
 
 import searxng from './searxng.js';
+import firecrawl from './firecrawl.js';
 import wikipedia from './wikipedia.js';
 import arxiv from './arxiv.js';
 import hackernews from './hackernews.js';
 import github from './github.js';
 import { openlibrary, crossref } from './library.js';
 
-const ALL = [wikipedia, hackernews, arxiv, github, crossref, openlibrary, searxng];
+const ALL = [wikipedia, hackernews, arxiv, github, crossref, openlibrary, firecrawl, searxng];
 
 const BY_ID = new Map(ALL.map((provider) => [provider.id, provider]));
 

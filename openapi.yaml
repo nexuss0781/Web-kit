@@ -165,7 +165,17 @@ components:
       properties:
         url: { type: string, format: uri }
         mode: { type: string, enum: [raw, text, markdown, metadata], default: markdown }
-        render: { type: string, enum: [never, auto, always], default: never }
+        render:
+          type: string
+          enum: [never, auto, always]
+          default: never
+          description: >-
+            never reads the page as the server sent it. always reads it in a
+            browser, which is how a page that needs its scripts run becomes
+            readable. auto reads it the cheap way first and re-reads it in a
+            browser only if the result looks like an empty shell. always and a
+            successful auto need FIRECRAWL_API_KEY; without it the page is
+            returned unread and a warning says so.
         timeout_ms: { type: integer, maximum: 12000 }
         max_bytes: { type: integer, maximum: 5242880 }
         follow_redirects: { type: boolean, default: true }

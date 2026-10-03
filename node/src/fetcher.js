@@ -17,6 +17,7 @@ import { parseUrl, assertPublicHost, UnsafeUrlError } from './safety.js';
 import { permitted } from './robots.js';
 import { extractMetadata, siteName } from './html.js';
 import { htmlToMarkdown, htmlToText } from './markdown.js';
+import * as firecrawl from './firecrawl.js';
 
 /**
  * Option names match openapi.yaml exactly, so there is one vocabulary between
@@ -102,13 +103,120 @@ export function resolveOptions(userOptions = {}) {
   return { ...DEFAULTS, ...named };
 }
 
+/**
+ * Whether a page looks like a shell that only becomes content once a browser
+ * runs the scripts in it.
+ *
+ * The tell is not the markup but the ratio: a React or Vue page ships a small
+ * body and a large bundle reference, and all the text arrives later. So a lot
+ * of HTML that yields almost no text is a page this service read too early, and
+ * a little HTML that yields a good deal of text is a page it read fine.
+ */
+/**
+ * Holds text to a byte ceiling without cutting a character in half.
+ *
+ * The naive version of this slices the string at `max_bytes` characters, which
+ * overruns on anything outside ASCII, or slices the buffer and leaves a lone
+ * surrogate or a replacement character at the end. Since the point of the
+ * ceiling is that the response is valid and bounded, the cut lands on a
+ * character boundary: a buffer slice, then one character dropped if the boundary
+ * fell inside one.
+ */
+export function boundText(text, maxBytes) {
+  const fullBytes = Buffer.byteLength(text, 'utf8');
+  if (fullBytes <= maxBytes) return { text, bytes: fullBytes, fullBytes, truncated: false };
+
+  let kept = Buffer.from(text, 'utf8').subarray(0, maxBytes).toString('utf8');
+  // The byte slice can split a multi-byte character, which decodes to U+FFFD.
+  // If that landed at the very end it was ours, so it goes; one elsewhere was
+  // already in the text and is not ours to remove.
+  if (kept.endsWith('�')) kept = kept.slice(0, -1);
+  return { text: kept, bytes: Buffer.byteLength(kept, 'utf8'), fullBytes, truncated: true };
+}
+
+export function looksUnrendered(html, extractedChars) {
+  if (extractedChars >= 500) return false;
+  // A small page with little text is a small page, not a shell to be rendered.
+  if (html.length < 20_000) return false;
+  return html.length / Math.max(extractedChars, 1) > 40;
+}
+
+/**
+ * Hands a URL to Firecrawl and maps the rendered page back onto this service's
+ * document shape, so a caller cannot tell from the response whether the text was
+ * read here or in a browser.
+ */
+async function renderWithFirecrawl(href, options, config, warnings, agent) {
+  const startedAt = Date.now();
+  const data = await firecrawl.scrape(href, {
+    timeoutMs: options.timeout_ms,
+    maxAge: config.firecrawlMaxAge,
+  }, config);
+
+  // Firecrawl answers with its own status for the page it fetched. Reporting 200
+  // regardless would turn a 404 or a paywall into a successful read, so the
+  // upstream status is carried through and only absent upstream becomes 200.
+  const upstreamStatus = Number(data.metadata?.statusCode ?? data.statusCode ?? 0);
+  const status = Number.isFinite(upstreamStatus) && upstreamStatus > 0 ? upstreamStatus : 200;
+
+  let markdown = typeof data.markdown === 'string' ? data.markdown : '';
+  const meta = data.metadata ?? {};
+  if (!markdown) warnings.push('the renderer returned no content for this page');
+
+  // A rendered article is usually longer than the page as sent, so the ceiling
+  // has to be applied to this path too.
+  const cut = boundText(markdown, options.max_bytes);
+  if (cut.truncated) {
+    markdown = cut.text;
+    warnings.push(`stopped after ${options.max_bytes} bytes; the page continues past that`);
+  }
+  const fullBytes = cut.fullBytes;
+
+  const document = {
+    content_hash: markdown ? `sha256:${crypto.createHash('sha256').update(markdown).digest('hex')}` : null,
+    metadata: {
+      title: meta.title ?? null,
+      description: meta.description ?? null,
+      canonical_url: meta.url ?? meta.sourceURL ?? meta['og:url'] ?? href,
+      language: meta.language ?? meta['og:locale'] ?? null,
+      charset: null,
+      published_at: meta['article:published_time'] ?? meta.publishedTime ?? null,
+      site: siteName(meta.url ?? meta.sourceURL ?? href),
+      links: [],
+    },
+    text: null,
+    markdown: options.mode === 'markdown' || options.mode === 'raw' ? markdown : null,
+    raw: null,
+  };
+  if (options.mode === 'text') document.text = markdown;
+  if (options.mode === 'raw') document.raw = markdown;
+
+  const bytes = Buffer.byteLength(markdown, 'utf8');
+
+  return {
+    request_id: crypto.randomUUID(),
+    retrieval: {
+      requested_url: href,
+      final_url: meta.url ?? meta.sourceURL ?? href,
+      status,
+      content_type: status === 200 ? 'text/markdown; rendered' : `text/markdown; rendered (upstream ${status})`,
+      // The size actually returned, and whether the full page was longer. The
+      // direct path reports the bytes it read; this reports what survives the
+      // ceiling, so the two agree on what `bytes` means.
+      bytes,
+      truncated: fullBytes > bytes,
+      redirects: [],
+    },
+    document,
+    warnings,
+    timing: { duration_ms: Date.now() - startedAt, redirects: 0 },
+  };
+}
+
 export async function fetchDocument(rawUrl, userOptions = {}, config = {}) {
   const options = resolveOptions(userOptions);
   const agent = config.userAgent || 'Web-Kit/0.1 (+https://github.com/nexuss0781/Web-kit)';
   const warnings = [];
-  if (options.render === 'auto' || options.render === 'always') {
-    warnings.push('render was requested but this service does not run a browser; the raw response is used as the server sent it');
-  }
   const startedAt = Date.now();
   const deadline = startedAt + options.timeout_ms;
 
@@ -119,6 +227,19 @@ export async function fetchDocument(rawUrl, userOptions = {}, config = {}) {
     const allowed = await permitted(first.href, agent, options.timeout_ms);
     if (!allowed) {
       throw new FetchError(`robots.txt does not permit ${first.pathname}`, 403, 'E_ROBOTS');
+    }
+  }
+
+  // A renderer is a second opinion on a URL we have already agreed to fetch.
+  // The checks above happen first on purpose: the renderer runs this service's
+  // requests from this service's instructions, so it is never asked to visit a
+  // host or a scheme the local path would have refused.
+  const canRender = Boolean(config.firecrawlApiKey);
+  if (options.render === 'always') {
+    if (!canRender) {
+      warnings.push('render was requested but FIRECRAWL_API_KEY is not set; the page is returned as the server sent it');
+    } else {
+      return renderWithFirecrawl(first.href, options, config, warnings, agent);
     }
   }
 
@@ -223,6 +344,26 @@ export async function fetchDocument(rawUrl, userOptions = {}, config = {}) {
         try { return new URL(match[1], current.href).href; } catch { return null; }
       })
       .filter(Boolean);
+  }
+
+  // `auto` means the caller does not know whether this page needs a browser, so
+  // the local read is tried first and the renderer is only paid for when the
+  // page turns out to have been a shell. That keeps a rendered page the exception
+  // rather than a tax on every fetch, and a page that is merely short is never
+  // mistaken for one.
+  if (options.render === 'auto' && canRender) {
+    const textish = document.markdown ?? document.text ?? '';
+    if (looksUnrendered(html, textish.length)) {
+      try {
+        const rendered = await renderWithFirecrawl(first.href, options, config, warnings, agent);
+        rendered.warnings.unshift('the page arrived as a script shell and was re-read in a browser');
+        return rendered;
+      } catch (error) {
+        // The local read already succeeded, so a renderer failure is a note and
+        // not an error: the caller gets what we have rather than nothing.
+        warnings.push(`the page needed rendering and the renderer failed (${error.message}); returning what the server sent`);
+      }
+    }
   }
 
   return {
