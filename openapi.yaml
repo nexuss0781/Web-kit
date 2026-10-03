@@ -59,6 +59,10 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SearchResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+        '502': { $ref: '#/components/responses/Upstream' }
     post:
       security:
         - bearerAuth: []
@@ -74,6 +78,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SearchResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+        '502': { $ref: '#/components/responses/Upstream' }
+        '503': { $ref: '#/components/responses/NoProvider' }
   /v1/fetch:
     get:
       operationId: fetchGet
@@ -91,6 +100,12 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/FetchResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+        '504': { $ref: '#/components/responses/Timeout' }
+        '502': { $ref: '#/components/responses/Upstream' }
     post:
       operationId: fetchPost
       requestBody:
@@ -104,7 +119,66 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/FetchResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+        '504': { $ref: '#/components/responses/Timeout' }
+        '502': { $ref: '#/components/responses/Upstream' }
 components:
+  responses:
+    # One definition per status, referenced from every operation that can
+    # produce it, so the shape is documented once instead of drifting per
+    # endpoint.
+    BadRequest:
+      description: An argument is missing, malformed or out of range. `E_BAD_REQUEST` or `E_BAD_JSON`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Unauthorized:
+      description: The bearer token is absent or wrong. `E_UNAUTHORIZED`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Forbidden:
+      description: >-
+        The request was understood and refused: robots.txt does not permit this
+        path, or the URL resolves into private space. `E_ROBOTS` or `E_UNSAFE_URL`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    TooLarge:
+      description: The request body is over the ceiling. `E_TOO_LARGE`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Timeout:
+      description: The page did not answer in time. `E_TIMEOUT`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Upstream:
+      description: >-
+        The page or an upstream could not be reached, or answered in a way this
+        service cannot use. A provider failing is not this: those come back in
+        `warnings` with a 200, because one provider down is not a failed search.
+        `E_FETCH` or `E_INTERNAL`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NoProvider:
+      description: >-
+        A search was asked for and this deployment has no provider enabled. Not a
+        fault in the request, and 503 rather than 502 because retrying will not
+        help until someone configures one. `E_NO_PROVIDER`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NotFound:
+      description: No such path on this service. `E_NOT_FOUND`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
   securitySchemes:
     bearerAuth:
       type: http
@@ -190,3 +264,40 @@ components:
         document: { type: object }
         warnings: { type: array, items: { type: string } }
         timing: { type: object }
+    ErrorResponse:
+      type: object
+      description: >-
+        Every failure has this shape, so a caller can read one without knowing
+        which of the endpoints it called. `request_id` is also in the log, so a
+        report can be tied to what actually happened.
+      required: [error, request_id]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: >-
+                Stable across releases and safe to branch on. The `E_*` codes
+                below are the whole vocabulary; anything else is a fault this
+                service did not anticipate.
+              enum:
+                - E_BAD_REQUEST     # missing or malformed argument
+                - E_BAD_JSON        # body was not parseable as JSON
+                - E_UNSAFE_URL      # refused: private address, bad scheme, unexpected port
+                - E_ROBOTS          # robots.txt does not permit this path
+                - E_NOT_FOUND       # no such path on this service
+                - E_NO_PROVIDER     # a search was asked for and no provider is configured
+                - E_TOO_LARGE       # request body over the ceiling
+                - E_UNAUTHORIZED    # missing or wrong bearer token
+                - E_TIMEOUT         # the page or an upstream did not answer in time
+                - E_FETCH           # the page could not be fetched
+                - E_INTERNAL        # a fault here, not a mistake by the caller
+            message:
+              type: string
+              description: >-
+                Readable, and specific for anything the caller can fix. A 5xx
+                says only "the request could not be completed", because the
+                detail belongs in the log and not in front of whoever is asking.
+        request_id: { type: string }

@@ -100,7 +100,13 @@ export async function search(request = {}, config = {}) {
     : candidates;
 
   if (asked.length === 0) {
-    throw Object.assign(new Error('no provider is enabled for this deployment'), { code: 'E_NO_PROVIDER' });
+    // 503 and not 502: nothing is wrong with the request and nothing is wrong
+    // upstream. This deployment has nothing configured to answer it, which is a
+    // configuration state and not a fault that retrying could clear.
+    throw Object.assign(new Error('no provider is enabled for this deployment'), {
+      code: 'E_NO_PROVIDER',
+      status: 503,
+    });
   }
 
   const warnings = [];

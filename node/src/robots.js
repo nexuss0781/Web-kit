@@ -8,7 +8,8 @@
  * the service useless on any site with a broken file.
  */
 
-import { parseUrl, assertPublicHost } from './safety.js';
+import { parseUrl } from './safety.js';
+import { pinnedGet, header } from './pinned.js';
 
 const cache = new Map();
 const CACHE_TTL_MS = 10 * 60 * 1000;
@@ -91,25 +92,24 @@ async function robotsFor(origin, agent, timeoutMs) {
   const value = await (async () => {
     try {
       let url = parseUrl(`${origin}/robots.txt`);
-      await assertPublicHost(url);
       let response = null;
       for (let hop = 0; hop <= 3; hop += 1) {
-        response = await fetch(url, {
-          redirect: 'manual',
-          signal: AbortSignal.timeout(Math.min(timeoutMs, 5000)),
+        // Dialled at a checked address, for the same reason the fetcher does it:
+        // robots.txt is fetched from a caller-named origin, so resolving the
+        // name once and connecting somewhere else is exactly the gap this closes.
+        response = await pinnedGet(url, {
+          timeoutMs: Math.min(timeoutMs, 5000),
+          maxBytes: 500_000,
           headers: { 'user-agent': agent, accept: 'text/plain' },
         });
-        const location = response.headers.get('location');
+        const location = header(response, 'location');
         if (!location || response.status < 300 || response.status >= 400) break;
-        response.body?.cancel().catch(() => {});
         // Every hop is checked: a redirect to a private address would otherwise
         // let robots.txt reach into the network the fetcher refuses to touch.
         url = parseUrl(new URL(location, url).href);
-        await assertPublicHost(url);
       }
-      if (!response.ok) return [];
-      const text = await response.text();
-      return parseRobots(text.slice(0, 500_000), agent);
+      if (response.status < 200 || response.status >= 300) return [];
+      return parseRobots((response.body ?? Buffer.alloc(0)).toString('utf8'), agent);
     } catch {
       return [];
     }

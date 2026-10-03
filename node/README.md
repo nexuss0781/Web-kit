@@ -14,6 +14,33 @@ npm test
 WEBKIT_API_TOKEN=$(openssl rand -base64 30) npm start
 ```
 
+## Reaching a caller-named URL
+
+`/v1/fetch` is the one path where the URL comes from whoever called, so it is
+the one path that has to care where that URL leads.
+
+A host is checked before anything is sent to it: the address is resolved, and
+if **any** address the name maps to is private, loopback, link-local or
+otherwise reserved, the request is refused. Checking every answer rather than
+the first is deliberate — a name with one public and one private record must not
+be fetched on the strength of the public one.
+
+Then the same address is dialled for the request. This is the part that is easy
+to leave out, and leaving it out makes the check decorative: DNS is consulted
+twice otherwise, and an attacker who controls a name with a short TTL can answer
+the first lookup with a public address and the second with `127.0.0.1`. That is
+DNS rebinding, and it turns a check into a formality a patient caller walks
+past. So `src/pinned.js` resolves once, checks once, and connects to the address
+it checked.
+
+The hostname still travels in the `Host` header and still goes to TLS as SNI, so
+sites see and validate the name that was asked for, and certificates are still
+checked against it. Only the address on the socket differs, and only for the
+lifetime of one request.
+
+Every redirect hop is checked the same way, and robots.txt is fetched through
+the same path — otherwise reading the rules would be the way in.
+
 ## Providers
 
 Search asks several providers at once and reconciles what they say. A result
@@ -123,7 +150,7 @@ wasmer deploy --non-interactive --build-remote
 
 ## Tests
 
-`npm test` runs 64 tests and touches no network. Providers are stubbed against
+`npm test` runs 73 tests and touches no network. Providers are stubbed against
 a local server, and the fetch tests assert the refusals rather than pulling
 pages down, which is the behaviour worth pinning. The one thing a hermetic suite
 cannot prove is that seven upstream APIs still answer; `wasmer app logs` and a

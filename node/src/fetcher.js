@@ -14,6 +14,7 @@
 
 import crypto from 'node:crypto';
 import { parseUrl, assertPublicHost, UnsafeUrlError } from './safety.js';
+import { pinnedGet, header } from './pinned.js';
 import { permitted } from './robots.js';
 import { extractMetadata, siteName } from './html.js';
 import { htmlToMarkdown, htmlToText } from './markdown.js';
@@ -43,34 +44,6 @@ export class FetchError extends Error {
     this.status = status;
     this.code = code;
   }
-}
-
-/** Reads at most `maxBytes` from a response body, then stops. */
-async function readBounded(response, maxBytes) {
-  if (!response.body) return { text: '', bytes: 0, truncated: false };
-
-  const reader = response.body.getReader();
-  const chunks = [];
-  let bytes = 0;
-  let truncated = false;
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (bytes + value.length > maxBytes) {
-      chunks.push(value.subarray(0, maxBytes - bytes));
-      bytes = maxBytes;
-      truncated = true;
-      // Stop the transfer instead of draining the rest of a very large page.
-      await reader.cancel().catch(() => {});
-      break;
-    }
-    chunks.push(value);
-    bytes += value.length;
-  }
-
-  const buffer = Buffer.concat(chunks);
-  return { text: buffer.toString('utf8'), bytes, truncated };
 }
 
 function decodeWithCharset(buffer, charset) {
@@ -221,6 +194,14 @@ export async function fetchDocument(rawUrl, userOptions = {}, config = {}) {
   const deadline = startedAt + options.timeout_ms;
 
   const first = parseUrl(rawUrl);
+  // Checked here so the refusal is immediate and specific, and because the
+  // render path hands this URL to another service: a renderer we have not
+  // checked is a way to reach a host this service would have refused.
+  //
+  // This is not the only check, and on its own it would not be enough. The
+  // fetch below resolves the name again and dials a verified address, so the
+  // answer here and the connection made there cannot come from different DNS
+  // lookups. A name that answers public once and private next time wins nothing.
   await assertPublicHost(first);
 
   if (options.respect_robots) {
@@ -251,9 +232,18 @@ export async function fetchDocument(rawUrl, userOptions = {}, config = {}) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new FetchError(`timed out after ${options.timeout_ms}ms`, 504, 'E_TIMEOUT');
 
-    response = await fetch(current, {
-      redirect: 'manual',
-      signal: AbortSignal.timeout(remaining),
+    /**
+     * Dialled at an address this service has already resolved and checked.
+     *
+     * The address comes from the same lookup that passed the safety check, so a
+     * name that answers public once and private the next time has nothing to
+     * win: there is no second lookup to influence. The name still travels in
+     * Host and in TLS SNI, so the site sees the request it expects and the
+     * certificate is still checked against the host that was asked for.
+     */
+    response = await pinnedGet(current, {
+      timeoutMs: remaining,
+      maxBytes: options.max_bytes,
       headers: {
         'user-agent': agent,
         accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5',
@@ -261,7 +251,7 @@ export async function fetchDocument(rawUrl, userOptions = {}, config = {}) {
       },
     });
 
-    const location = response.headers.get('location');
+    const location = header(response, 'location');
     const isRedirect = response.status >= 300 && response.status < 400 && location;
     if (!isRedirect || !options.follow_redirects) break;
 
@@ -285,12 +275,13 @@ export async function fetchDocument(rawUrl, userOptions = {}, config = {}) {
       throw error;
     }
 
-    await response.body?.cancel().catch(() => {});
+    // The connection was opened with `connection: close`, so the socket is
+    // already closing; nothing is left to drain and nothing is left to release.
     redirectChain.push(current.href);
     current = next;
   }
 
-  const contentType = response.headers.get('content-type') ?? '';
+  const contentType = header(response, 'content-type') ?? '';
   const charset = /charset=([\w-]+)/i.exec(contentType)?.[1];
   const isHtml = /text\/html|application\/xhtml/i.test(contentType) || (!contentType && true);
 
@@ -304,8 +295,8 @@ export async function fetchDocument(rawUrl, userOptions = {}, config = {}) {
         final_url: current.href,
         status: response.status,
         content_type: contentType || null,
-        bytes: Number(response.headers.get('content-length') ?? 0),
-        truncated: false,
+        bytes: Number(header(response, 'content-length') ?? response.body?.length ?? 0),
+        truncated: response.truncated,
         redirects: redirectChain,
       },
       document: { content_hash: null, text: null, markdown: null, metadata: null, links: [] },
@@ -314,11 +305,11 @@ export async function fetchDocument(rawUrl, userOptions = {}, config = {}) {
     };
   }
 
-  const { text, bytes, truncated } = await readBounded(response, options.max_bytes);
-  if (truncated) warnings.push(`stopped after ${options.max_bytes} bytes; the page continues past that`);
+  const bytes = response.body?.length ?? 0;
+  if (response.truncated) warnings.push(`stopped after ${options.max_bytes} bytes; the page continues past that`);
   if (response.status >= 400) warnings.push(`the page answered ${response.status}`);
 
-  const html = decodeWithCharset(Buffer.from(text, 'utf8'), charset);
+  const html = decodeWithCharset(response.body ?? Buffer.alloc(0), charset);
   const metadata = isHtml ? extractMetadata(html, current.href) : { title: null, description: null, canonical_url: null, language: null, charset, published_at: null, links: [] };
   metadata.site = siteName(current.href);
   if (!options.include_links) metadata.links = [];
@@ -376,7 +367,7 @@ export async function fetchDocument(rawUrl, userOptions = {}, config = {}) {
       status: response.status,
       content_type: contentType || null,
       bytes,
-      truncated,
+      truncated: response.truncated,
       redirects: redirectChain,
     },
     document,
