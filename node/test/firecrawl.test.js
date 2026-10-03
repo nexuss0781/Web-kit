@@ -5,6 +5,7 @@ import { postJson, withDomains, search, scrape } from '../src/firecrawl.js';
 import firecrawl, { rows } from '../src/providers/firecrawl.js';
 import { looksUnrendered, boundText, fetchDocument } from '../src/fetcher.js';
 import { allProviders, enabledProviders } from '../src/providers/index.js';
+import { normalise } from '../src/search.js';
 
 /** A local server, so these tests assert our request and not Firecrawl's. */
 async function serve(handler) {
@@ -168,6 +169,45 @@ test('a limit past the documented range is clamped rather than passed on', async
   } finally {
     await upstream.close();
   }
+});
+
+test('a snippet arrives as text, not as the markup it was encoded in', () => {
+  // Seen live: Crossref handing back `Mail&#039;s` and Wikipedia `&quot;`.
+  const apostrophe = normalise(
+    { url: 'https://a.test/1', title: 'Migrating from Oracle', snippet: "Mail&#039;s migration &amp; what it cost" },
+    'crossref',
+    1,
+  );
+  assert.equal(apostrophe.snippet, "Mail's migration & what it cost");
+
+  const quoted = normalise(
+    { url: 'https://a.test/2', title: 'Data &amp; Storage', snippet: '&quot;Parquet in the lake&quot;' },
+    'wikipedia',
+    1,
+  );
+  assert.equal(quoted.title, 'Data & Storage');
+  assert.equal(quoted.snippet, '"Parquet in the lake"');
+
+  // Wikipedia wraps its highlights in tags. Decoding first would turn
+  // `&lt;b&gt;` into markup the API never sent.
+  const marked = normalise(
+    { url: 'https://a.test/3', title: 'Aurora', snippet: 'a <span class="searchmatch">light</span> display &amp; more' },
+    'wikipedia',
+    1,
+  );
+  assert.equal(marked.snippet, 'a light display & more');
+  assert.ok(!marked.snippet.includes('<'), 'no markup is invented from an encoded tag');
+
+  // Decoding happens once. `&amp;#x2764;` is a literal `&#x2764;` in the source
+  // text, not a heart, and re-scanning the result would be a second decode
+  // nobody asked for.
+  const encoded = normalise({ url: 'https://a.test/4', snippet: 'R&amp;D &amp;#x2764;' }, 'crossref', 1);
+  assert.equal(encoded.snippet, 'R&D &#x2764;');
+  assert.equal(normalise({ url: 'https://a.test/4b', snippet: 'R&D &#x2764;' }, 'crossref', 1).snippet, 'R&D ❤');
+
+  // An unknown entity is left alone rather than guessed at, and html in a
+  // snippet does not become part of the title.
+  assert.equal(normalise({ url: 'https://a.test/5', snippet: '&nosuchthing; <b>bold</b>' }, 'crossref', 1).snippet, '&nosuchthing; bold');
 });
 
 test('a long rendered page is held to the ceiling instead of only being called long', async () => {

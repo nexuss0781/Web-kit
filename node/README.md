@@ -123,7 +123,7 @@ wasmer deploy --non-interactive --build-remote
 
 ## Tests
 
-`npm test` runs 63 tests and touches no network. Providers are stubbed against
+`npm test` runs 64 tests and touches no network. Providers are stubbed against
 a local server, and the fetch tests assert the refusals rather than pulling
 pages down, which is the behaviour worth pinning. The one thing a hermetic suite
 cannot prove is that seven upstream APIs still answer; `wasmer app logs` and a
