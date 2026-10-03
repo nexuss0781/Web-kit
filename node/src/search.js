@@ -9,16 +9,35 @@
 
 import crypto from 'node:crypto';
 import { canonicalUrl } from './html.js';
+import { decodeEntities } from './markdown.js';
 import { enabledProviders } from './providers/index.js';
 
 /** Reciprocal rank fusion: a result's score is the sum of 1/(k + rank). */
 const FUSION_K = 60;
 
+/**
+ * Tidies one piece of text from a provider.
+ *
+ * Entities are decoded here rather than in each provider, because this is the
+ * one place every row passes through and the fix would otherwise have to be
+ * repeated in seven files, with the seventh eventually forgotten. Wikipedia wraps
+ * its highlights in tags and Crossref hands back escaped punctuation, so an
+ * undecoded snippet reaches the reader as `Mail&#039;s` -- and a `&amp;` in a
+ * title decodes to a bare `&`, which is what the underlying text actually says.
+ *
+ * Tags are stripped first: decoding `&lt;b&gt;` into `<b>` and then handing that
+ * on would invent markup the provider never sent.
+ */
+function tidy(value) {
+  const text = String(value ?? '').replace(/<[^>]*>/g, '');
+  return decodeEntities(text).replace(/\s+/g, ' ').trim();
+}
+
 export function normalise(row, provider, rank) {
   const url = String(row?.url ?? '').trim();
   if (!/^https?:\/\//i.test(url)) return null;
-  const title = String(row?.title ?? '').replace(/\s+/g, ' ').trim();
-  const snippet = String(row?.snippet ?? '').replace(/\s+/g, ' ').trim();
+  const title = tidy(row?.title);
+  const snippet = tidy(row?.snippet);
   return {
     title: title || url,
     url,
