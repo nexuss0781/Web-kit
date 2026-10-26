@@ -22,7 +22,7 @@ impl Config {
             bind_addr,
             api_token: env::var("WEBKIT_API_TOKEN").ok().filter(|v| !v.is_empty()),
             searxng_url: env::var("WEBKIT_SEARXNG_URL")
-                .unwrap_or_else(|_| "http://searxng:8080".to_string()),
+                .unwrap_or_else(|_| "http://127.0.0.1:8888".to_string()),
             user_agent: env::var("WEBKIT_USER_AGENT").unwrap_or_else(|_| {
                 "Web-Kit/0.1 (+https://github.com/nexus-agents/web-kit)".to_string()
             }),

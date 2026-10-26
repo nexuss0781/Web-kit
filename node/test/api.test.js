@@ -113,3 +113,24 @@ test('every fetch is refused before it reaches the network', async () => {
   assert.equal(response.status, 400);
 });
 
+test('the firecrawl surface fails in firecrawl shape', async () => {
+  // A client written against Firecrawl reads `success` and `error`. Handing it
+  // our error envelope would show up as "unexpected response" and hide the
+  // reason, so the shape follows the surface the caller thinks it is using.
+  const denied = await fetch(`${base}/v2/search`, { method: 'POST', body: '{}' });
+  assert.equal(denied.status, 401);
+  const refused = await denied.json();
+  assert.equal(refused.success, false);
+  assert.equal(typeof refused.error, 'string');
+
+  const missing = await authed('/v2/nope');
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json()).success, false);
+
+  const noUrl = await authed('/v2/scrape', { method: 'POST', body: '{}' });
+  assert.equal(noUrl.status, 400);
+  const body = await noUrl.json();
+  assert.equal(body.success, false);
+  assert.match(body.error, /url is required/);
+});
+

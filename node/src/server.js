@@ -16,6 +16,7 @@ import { search } from './search.js';
 import { describeProviders, enabledProviders } from './providers/index.js';
 import { fetchDocument, FetchError } from './fetcher.js';
 import { UnsafeUrlError } from './safety.js';
+import { v2Search, v2Scrape, v2DeveloperSearch } from './compat.js';
 
 const config = loadConfig();
 
@@ -40,16 +41,15 @@ function sendError(response, error) {
 }
 
 /** Constant time comparison, so a wrong token cannot be found one character at a time. */
-function authorized(request) {
-  if (!config.apiToken) return true;
+function authorized(request, expected) {
+  if (!expected) return true;
   const header = request.headers.authorization ?? '';
   const given = header.startsWith('Bearer ') ? header.slice(7) : '';
-  const expected = config.apiToken;
   if (given.length !== expected.length) return false;
   return crypto.timingSafeEqual(Buffer.from(given), Buffer.from(expected));
 }
 
-function readBody(request) {
+function readBody(request, config) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
@@ -90,22 +90,73 @@ function bounded(value, min, max, fallback) {
 
 const bool = (value) => (value === null || value === undefined ? undefined : value !== 'false');
 
-const routes = {
+/**
+ * A GET against the compatibility surface, read as if it had been a POST body.
+ *
+ * The CLI sends POST, but the documented developer endpoint is a GET and a
+ * caller may well have bookmarked one. Reading both from one place is cheaper
+ * than teaching every handler two shapes.
+ */
+function paramsAsBody(url, listKeys) {
+  const body = {};
+  for (const [key, value] of url.searchParams) {
+    if (value !== '') body[key] = value;
+  }
+  // Lists are comma-separated in a query string and arrays in a JSON body.
+  for (const key of listKeys) {
+    if (typeof body[key] === 'string') {
+      body[key] = body[key].split(',').map((entry) => entry.trim()).filter(Boolean);
+    }
+  }
+  if (!body.query && body.q) body.query = body.q;
+  return body;
+}
+
+const LIST_PARAMS = ['sources', 'includeDomains', 'excludeDomains', 'categories'];
+
+/**
+ * The route table for one configuration.
+ *
+ * A factory rather than a constant because the SDK runs the same engine in a
+ * process it owns: the port, the token and the provider ordering come from the
+ * caller, not from this module's environment. The deployment still builds it
+ * from the environment, so both paths are the same code.
+ */
+export function makeRoutes(config) {
+  return {
   'GET /healthz': async () => ({
     status: 200,
-    json: { status: 'ok', service: 'web-kit', version: '0.1.0', uptime_s: Math.round(process.uptime()) },
+    json: {
+      status: 'ok',
+      service: 'web-kit',
+      version: '0.1.0',
+      uptime_s: Math.round(process.uptime()),
+      ...(config.instance ? { instance: config.instance } : {}),
+    },
   }),
 
   'GET /readyz': async () => ({
     status: 200,
-    json: { status: 'ready', providers: enabledProviders(config).length, auth_required: Boolean(config.apiToken) },
+    json: {
+      status: 'ready',
+      providers: enabledProviders(config).length,
+      auth_required: Boolean(config.apiToken),
+      ...(config.instance ? { instance: config.instance } : {}),
+      // Whether the general index is available without a key. It is the one
+      // setting that changes the quality of an answer, so it is reported where
+      // a deployment check can see it.
+      keyless_firecrawl: Boolean(config.keylessFirecrawl) && !config.firecrawlApiKey,
+    },
   }),
 
   'GET /': async () => ({
     status: 200,
     json: {
       service: 'web-kit',
-      routes: ['/healthz', '/readyz', '/v1/providers', '/v1/search', '/v1/fetch'],
+      routes: [
+        '/healthz', '/readyz', '/v1/providers', '/v1/search', '/v1/fetch',
+        '/v2/search', '/v2/scrape', '/v2/search/developer',
+      ],
       providers: describeProviders(config),
       auth_required: Boolean(config.apiToken),
     },
@@ -171,14 +222,50 @@ const routes = {
       }, config),
     };
   },
-};
 
-export function createServer() {
+  /**
+   * The Firecrawl-compatible surface.
+   *
+   * One env var on the client side (`FIRECRAWL_API_URL`) is the whole point:
+   * the skills are written against `firecrawl <command>`, so answering these
+   * routes keeps them working without touching any of them.
+   */
+  'POST /v2/search': async (_query, _url, body) => ({ status: 200, json: await v2Search(body, config) }),
+  'GET /v2/search': async (_query, url) => ({
+    status: 200,
+    json: await v2Search(paramsAsBody(url, LIST_PARAMS), config),
+  }),
+
+  'POST /v2/scrape': async (_query, _url, body) => ({ status: 200, json: await v2Scrape(body, config) }),
+
+  'GET /v2/search/developer': async (_query, url) => ({
+    status: 200,
+    json: await v2DeveloperSearch(Object.fromEntries(url.searchParams), config),
+  }),
+  'POST /v2/search/developer': async (_query, _url, body) => ({
+    status: 200,
+    json: await v2DeveloperSearch(body, config),
+  }),
+  };
+}
+
+export function createServer(configOverride) {
+  // The SDK passes its own configuration; a deployed instance reads the
+  // environment once at load, as before.
+  const active = configOverride ?? config;
+
   return http.createServer(async (request, response) => {
     const url = new URL(request.url, 'http://localhost');
     const isOpen = url.pathname === '/healthz' || url.pathname === '/readyz' || url.pathname === '/';
+    // Firecrawl's clients read `success` and `error` at the top level. Answering
+    // one of its endpoints with our own error envelope would turn a clear
+    // refusal into "unexpected response", so the shape follows the surface the
+    // caller thinks it is talking to.
+    const isCompat = url.pathname.startsWith('/v2/');
+    const routes = makeRoutes(active);
 
-    if (!isOpen && !authorized(request)) {
+    if (!isOpen && !authorized(request, active.apiToken)) {
+      if (isCompat) return sendJson(response, 401, { success: false, error: 'a bearer token is required' });
       return sendJson(response, 401, {
         error: { code: 'E_UNAUTHORIZED', message: 'a bearer token is required' },
         request_id: crypto.randomUUID(),
@@ -187,6 +274,9 @@ export function createServer() {
 
     const route = routes[`${request.method} ${url.pathname}`];
     if (!route) {
+      if (isCompat) {
+        return sendJson(response, 404, { success: false, error: `no route for ${request.method} ${url.pathname}` });
+      }
       return sendJson(response, 404, {
         error: { code: 'E_NOT_FOUND', message: `no route for ${request.method} ${url.pathname}` },
       });
@@ -195,11 +285,18 @@ export function createServer() {
     try {
       const query = Object.fromEntries(url.searchParams);
       const body = request.method === 'POST' || request.method === 'PUT' || request.method === 'PATCH'
-        ? await readBody(request)
+        ? await readBody(request, active)
         : {};
       const result = await route(query, url, body);
       return sendJson(response, result.status, result.json);
     } catch (error) {
+      if (isCompat) {
+        const status = error.status ?? 502;
+        return sendJson(response, status, {
+          success: false,
+          error: status < 500 ? error.message : `the request could not be completed: ${error.message}`,
+        });
+      }
       return sendError(response, error);
     }
   });
@@ -213,4 +310,4 @@ if (isDirectExecution) {
   });
 }
 
-export { config, routes };
+export { config };

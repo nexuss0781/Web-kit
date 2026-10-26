@@ -2,6 +2,16 @@
 
 Web-Kit is a free-first web search and page-fetching service for Nexus Agents. It exposes a stable JSON API over multiple search providers and applies bounded, SSRF-aware HTTP fetching with normalized metadata, text, Markdown, links, and content hashes.
 
+## Use it from an agent
+
+`sdk/` turns this service into something an agent runs on its own machine: `webkit-sdk` downloads and supervises SearXNG, serves the same Firecrawl-compatible API on loopback, and needs no API key. See [sdk/README.md](sdk/README.md).
+
+```cmd
+npx webkit-sdk doctor
+npx webkit-sdk search "postgres 18 release notes" --limit 8
+npx webkit-sdk scrape https://example.com/article -o page.md
+```
+
 ## Current milestone
 
 The current implementation includes a Rust/Axum API, a self-hosted SearXNG adapter, provider fan-out and fallback modes, canonical URL deduplication with fused ranking, safe manual redirect handling, bounded streaming downloads, HTML metadata extraction, basic Markdown conversion, bearer-token authentication, health endpoints, Docker Compose, and unit tests.
@@ -25,12 +35,19 @@ curl -H "Authorization: Bearer replace-with-a-long-random-token" \
   "http://localhost:8080/v1/search?q=rust+async+http&providers=searxng&limit=5"
 ```
 
-For local Rust development without Docker:
+For local Rust development without Docker, run SearXNG natively on port 8888 and point Web-Kit at it:
 
-```bash
+```bat
+:: start / stop the local SearXNG instance (http://127.0.0.1:8888)
+schtasks /Run /TN SearXNG
+schtasks /End /TN SearXNG
+
+set WEBKIT_SEARXNG_URL=http://127.0.0.1:8888
 cargo run
 cargo test
 ```
+
+The default `WEBKIT_SEARXNG_URL` already targets `http://127.0.0.1:8888`; Docker Compose overrides it to `http://searxng:8080`.
 
 ## API examples
 
@@ -86,7 +103,7 @@ Web-Kit validates the original URL and every redirect target. It allows only HTT
 |---|---:|---|
 | `WEBKIT_BIND_ADDR` | `0.0.0.0:8080` | API listen address. |
 | `WEBKIT_API_TOKEN` | empty | Optional bearer token. Set it in production. |
-| `WEBKIT_SEARXNG_URL` | `http://searxng:8080` | SearXNG base URL. |
+| `WEBKIT_SEARXNG_URL` | `http://127.0.0.1:8888` | SearXNG base URL. Docker Compose overrides it to `http://searxng:8080`. |
 | `WEBKIT_USER_AGENT` | Web-Kit identifier | User agent sent to upstream services. |
 | `WEBKIT_MAX_BODY_BYTES` | `5242880` | Maximum fetched body size. |
 | `WEBKIT_MAX_REDIRECTS` | `5` | Maximum validated redirects. |

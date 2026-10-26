@@ -152,17 +152,51 @@ everything under `/v1` needs it.
 
 ## Deploying
 
-`app.yaml` is in this directory, and it points at the `tadihhuh` account.
+`app.yaml` is in this directory and deploys to `nexuss0781` as
+`https://webkit.wasmer.app`.
 
-The token is deliberately absent from it. Pass it as a Wasmer app secret, which
-is how it stays out of the repository and out of the shell history:
+The token is deliberately absent from it. Create it as a Wasmer app secret, so
+it stays out of the repository and out of shell history. In the dashboard
+(`App > Secrets`) paste the value there once; from `cmd.exe` the equivalent is
 
-```sh
-wasmer app secret create WEBKIT_API_TOKEN "$WEBKIT_API_TOKEN"
+```bat
+set WEBKIT_API_TOKEN=<the value>
+wasmer app secret create WEBKIT_API_TOKEN %WEBKIT_API_TOKEN%
+set WEBKIT_API_TOKEN=
 wasmer deploy --non-interactive --build-remote
 ```
 
-`--build-remote` is needed because `app.yaml` names a local package.
+`--build-remote` is needed because `app.yaml` names a local package. The remote
+builder maps `node@24` to `wasmer/edgejs-quickjs`, which is enough for every
+core module this service uses (`node:http`, `node:crypto`, `node:dns`,
+`node:net`, `node:https`); it was checked by calling the live endpoints, not
+assumed.
+
+Two things about `app.yaml` are load-bearing:
+
+- `app_id` must be absent when creating an app and must not be copied between
+  accounts. A stale `app_id` makes the server answer
+  `deployViaAutobuild requires editor access`, which reads like a permissions
+  problem and is really "that app belongs to someone else".
+- `owner` decides the hostname. An app owned by the user gets
+  `web-kit.wasmer.app`; the same app in a namespace gets
+  `web-kit-<namespace>.wasmer.app`. Wasmer subdomains are global, so the bare
+  name is only available if nobody else holds it -- this deployment answers on
+  the `webkit.wasmer.app` alias instead.
+
+Secrets apply on the next deploy, so if the token is created after the first
+deploy, deploy once more.
+
+### What this deployment can answer
+
+It runs with no `FIRECRAWL_API_KEY` and no `WEBKIT_SEARXNG_URL`, so six vertical
+indexes are enabled (Wikipedia, Hacker News, arXiv, GitHub, Crossref, Open
+Library) and both general-web providers are off. That is fine for software and
+research questions that live in those indexes and poor for anything else: a
+query like "best coffee grinder 2026" comes back with an arXiv paper and a
+dictionary entry, because nothing in the enabled set indexes the open web.
+Adding either secret is what turns it into a general-purpose search; nothing
+else in the service changes.
 
 ## Tests
 

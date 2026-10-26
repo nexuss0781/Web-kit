@@ -44,12 +44,28 @@ async function familyFor(hostname) {
   return pending;
 }
 
-/** POSTs JSON and requires a 2xx back, the way getJson does for GET. */
-export async function postJson(target, body, { apiKey, timeoutMs = DEFAULT_TIMEOUT_MS, headers = {} }) {
+/**
+ * Calls a JSON endpoint and requires a 2xx back, the way getJson does for GET.
+ *
+ * The authorization header is only sent when there is a key. Firecrawl's free
+ * tier is a real endpoint that answers to an unauthenticated request, and a
+ * literal `Bearer undefined` would turn that into a 401 that looks like a
+ * credential problem instead of the free tier answering.
+ *
+ * `method` is here for the developer index, which is a GET with the query in
+ * the URL. Everything else is a POST.
+ */
+export async function requestJson(target, {
+  method = 'POST',
+  body = null,
+  apiKey,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  headers = {},
+} = {}) {
   const parsed = new URL(target);
   const send = parsed.protocol === 'https:' ? httpsRequest : httpRequest;
   const family = await familyFor(parsed.hostname);
-  const payload = Buffer.from(JSON.stringify(body));
+  const payload = body === null ? null : Buffer.from(JSON.stringify(body));
 
   return new Promise((resolve, reject) => {
     // One place where a success becomes a value and a failure becomes a throw.
@@ -73,13 +89,12 @@ export async function postJson(target, body, { apiKey, timeoutMs = DEFAULT_TIMEO
         servername: parsed.hostname,
         port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
         path: `${parsed.pathname}${parsed.search}`,
-        method: 'POST',
+        method,
         headers: {
           'user-agent': USER_AGENT,
           accept: 'application/json',
-          'content-type': 'application/json',
-          'content-length': payload.length,
-          authorization: `Bearer ${apiKey}`,
+          ...(payload ? { 'content-type': 'application/json', 'content-length': payload.length } : {}),
+          ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
           ...headers,
         },
       },
@@ -126,10 +141,15 @@ export async function postJson(target, body, { apiKey, timeoutMs = DEFAULT_TIMEO
         res.on('error', reject);
       },
     );
-    req.setTimeout(timeoutMs, () => req.destroy(new Error(`no answer from firecrawl within ${timeoutMs}ms`)));
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(`no answer from ${parsed.hostname} within ${timeoutMs}ms`)));
     req.on('error', reject);
-    req.end(payload);
+    req.end(payload ?? undefined);
   });
+}
+
+/** The POST-only form, kept because every existing caller is a POST. */
+export function postJson(target, body, options = {}) {
+  return requestJson(target, { ...options, body });
 }
 
 /** Our time_range vocabulary onto Firecrawl's `tbs` codes, which are Google's. */
@@ -202,4 +222,34 @@ export async function scrape(url, options = {}, config = {}) {
     timeoutMs,
   });
   return response.data ?? {};
+}
+
+/**
+ * The v2 search endpoint, used by the compatibility surface.
+ *
+ * Separate from `search` above because they are different APIs, not different
+ * versions of one call: v2 answers with grouped `data.web/data.news/data.images`
+ * and takes its filters in a different vocabulary. The client stays dumb and
+ * posts what it is given; deciding what to send is the compat layer's job.
+ */
+export async function v2Search(body, { apiKey, timeoutMs, baseUrl } = {}) {
+  return requestJson(`${baseUrl || `https://${API_HOST}`}/v2/search`, {
+    body,
+    apiKey,
+    timeoutMs,
+  });
+}
+
+/**
+ * The developer index: semantic search over repositories, issues and docs.
+ * It is a GET, and it is the one endpoint whose answer we pass through
+ * untouched -- its `passages` are the value, and re-shaping them would only
+ * lose the part that tells an agent which line of a README mattered.
+ */
+export async function v2DeveloperSearch(params, { apiKey, timeoutMs, baseUrl } = {}) {
+  return requestJson(`${baseUrl || `https://${API_HOST}`}/v2/search/developer?${params}`, {
+    method: 'GET',
+    apiKey,
+    timeoutMs,
+  });
 }

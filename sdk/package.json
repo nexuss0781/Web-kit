@@ -1,0 +1,46 @@
+{
+  "name": "webkit-sdk",
+  "version": "0.1.0",
+  "description": "Self-hosted web access for agents: SearXNG plus keyless Firecrawl behind one Firecrawl-compatible API.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "webkit": "bin/webkit.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "engine",
+    "python",
+    "skills",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "bundle": "node scripts/bundle-engine.mjs",
+    "prepack": "node scripts/bundle-engine.mjs",
+    "test": "node --test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nexuss0781/Web-kit.git",
+    "directory": "sdk"
+  },
+  "homepage": "https://github.com/nexuss0781/Web-kit/tree/main/sdk",
+  "keywords": [
+    "search",
+    "scrape",
+    "crawl",
+    "firecrawl",
+    "searxng",
+    "agent",
+    "self-hosted"
+  ],
+  "license": "MIT"
+}

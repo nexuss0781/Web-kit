@@ -31,19 +31,60 @@ export function loadConfig(env = process.env) {
     port: integer(env.WEBKIT_PORT || env.PORT, 3000),
     bindAddr: `${env.WEBKIT_HOST || env.HOST || '0.0.0.0'}:${integer(env.WEBKIT_PORT || env.PORT, 3000)}`,
     apiToken: env.WEBKIT_API_TOKEN || null,
+    /**
+     * Who this process is.
+     *
+     * Two servers can listen on the same port on Windows, because its
+     * SO_REUSEADDR lets a specific address sit next to a wildcard one. The
+     * health endpoints echo this value, so the SDK can tell its own daemon from
+     * the stranger that may be sharing the port instead of trusting whoever
+     * answers first. Unset in a plain deployment, where nothing compares it.
+     */
+    instance: env.WEBKIT_INSTANCE || null,
     userAgent: env.WEBKIT_USER_AGENT || 'Web-Kit/0.1 (+https://github.com/nexuss0781/Web-kit)',
 
     /** Empty means every provider that is available in this deployment. */
     providers: list(env.WEBKIT_PROVIDERS, []),
     searxngUrls: list(env.WEBKIT_SEARXNG_URLS || env.WEBKIT_SEARXNG_URL, []),
+    /**
+     * The order the compatibility surface tries providers in.
+     *
+     * The SDK's default puts SearXNG first because it is local, free and
+     * richest; keyless Firecrawl is the general index behind it, the verticals
+     * are the backstop, and a keyed call is last because it spends money. A
+     * deployment that has no SearXNG simply starts further down the list.
+     */
+    searchTiers: list(env.WEBKIT_SEARCH_TIERS, []),
+    /** Fewer results than this from a tier is a reason to try the next one. */
+    searchMinResults: integer(env.WEBKIT_SEARCH_MIN_RESULTS, 3),
     githubToken: env.WEBKIT_GITHUB_TOKEN || null,
 
     // The one provider that needs a key, and the only general web index here.
     // It joins the default set as soon as FIRECRAWL_API_KEY is present and is
     // what `render: auto|always` uses for JavaScript pages.
     firecrawlApiKey: env.FIRECRAWL_API_KEY || null,
-    // A self-hosted Firecrawl changes only the host; the paths are the same.
-    firecrawlApiUrl: (env.FIRECRAWL_API_URL || 'https://api.firecrawl.dev').replace(/\/+$/, ''),
+    /**
+     * Where *outbound* Firecrawl calls go. A self-hosted Firecrawl changes only
+     * the host; the paths are the same.
+     *
+     * `WEBKIT_FIRECRAWL_UPSTREAM` exists because `FIRECRAWL_API_URL` means the
+     * opposite thing to the Firecrawl CLI: the CLI sends requests *to* that
+     * address, while this service forwards requests *to* it. The SDK sets
+     * `FIRECRAWL_API_URL` to itself so the CLI and the skills work, and must not
+     * let that same variable turn this service into its own upstream. It sets
+     * the explicit name instead.
+     */
+    firecrawlApiUrl: (env.WEBKIT_FIRECRAWL_UPSTREAM || env.FIRECRAWL_API_URL || 'https://api.firecrawl.dev').replace(/\/+$/, ''),
+    /**
+     * Whether the free, unauthenticated Firecrawl tier may be used.
+     *
+     * It answers from a cloud address and refuses addresses it reads as VPN or
+     * proxy, which is why it is a switch rather than an assumption: a
+     * deployment on a flagged network would pay a failed round trip on every
+     * search for an answer it can never get. Off, the compat surface falls
+     * straight through to the local providers.
+     */
+    keylessFirecrawl: bool(env.WEBKIT_KEYLESS_FIRECRAWL, true),
     // How old a reused copy of a page may be, in ms. 0 forces a fresh read,
     // which costs more and is only right for something time sensitive.
     firecrawlMaxAge: integer(env.FIRECRAWL_MAX_AGE_MS, 172_800_000),

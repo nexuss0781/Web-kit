@@ -1,14 +1,14 @@
-# Web-Kit's Node build, on the second account.
+# Web-Kit's Node build, deployed to the primary account.
 #
 # There are no volumes: the service answers questions and returns pages, and has
 # nothing worth keeping between requests.
 #
-# The API token is not here. It is passed with --env-file so it stays out of the
-# repository and out of this file; /healthz and /readyz are open so the platform
-# can still probe the app without it.
+# The API token is not here. It is created as a Wasmer app secret, so it stays
+# out of the repository and out of this file; /healthz and /readyz are open so
+# the platform can still probe the app without it.
 kind: wasmer.io/App.v0
 name: web-kit
-owner: tadihhuh
+owner: nexuss0781
 package: .
 annotations:
   anybuild.run/config:
@@ -25,6 +25,6 @@ annotations:
     edgejs_precompile: true
     name: out
   anybuild.run/provider: node
-  anybuild.run/version: 0.32.0
+  anybuild.run/version: 0.33.0
   wasmer.io/version: 7.5.0
-app_id: da_R9EIBt1U5O8J
+app_id: da_nYYILtXU4DjZ

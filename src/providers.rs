@@ -191,12 +191,13 @@ impl ProviderRegistry {
         let started = Instant::now();
         let mode = request.mode.clone().unwrap_or_default();
         let names = request.providers.clone().unwrap_or_else(|| {
+            // Default fan-out uses only the providers this deployment can serve:
+            // SearXNG aggregates ddg/brave/google; mojeek and qwant stay
+            // registered for explicit selection but are not queried by default.
             vec![
                 "searxng".to_string(),
                 "duckduckgo".to_string(),
-                "mojeek".to_string(),
                 "brave".to_string(),
-                "qwant".to_string(),
             ]
         });
         let mut warnings = Vec::new();
