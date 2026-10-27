@@ -129,7 +129,7 @@ function tables(html) {
 }
 
 /** Every key a page states, lowered to a form a schema property can match. */
-function factMap({ jsonld, openGraph, meta, micro }) {
+function factMap({ jsonld, openGraph, meta, micro, extra = {} }) {
   const facts = new Map();
   const put = (key, value) => {
     if (value === undefined || value === null || value === '') return;
@@ -147,6 +147,9 @@ function factMap({ jsonld, openGraph, meta, micro }) {
   for (const [key, value] of Object.entries(openGraph)) put(key, value);
   for (const [key, value] of Object.entries(meta)) put(key, value);
   for (const [key, value] of Object.entries(micro)) put(key, value);
+  // The document's own title and description are stated by the page too, even
+  // when it publishes no structured markup at all.
+  for (const [key, value] of Object.entries(extra)) put(key, value);
   return facts;
 }
 
@@ -222,11 +225,22 @@ function mergeObjects(target, incoming) {
  * from JSON-LD, microdata, OpenGraph, meta tags and tables, which is the same
  * promise `extract` makes and should not be implemented twice.
  */
-export function structuredFromHtml(html, schema) {
+export function structuredFromHtml(html, schema, extra = {}) {
   const { openGraph, named } = metaTags(html);
   const ld = jsonLd(html);
   const micro = microdata(html);
-  const facts = factMap({ jsonld: ld, openGraph, meta: named, micro });
+  const title = /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(String(html ?? ''))?.[1];
+  const facts = factMap({
+    jsonld: ld,
+    openGraph,
+    meta: named,
+    micro,
+    extra: {
+      ...extra,
+      title: extra.title ?? (title ? stripTags(title) : undefined),
+      description: extra.description ?? named.description,
+    },
+  });
   if (schema) return fillSchema(schema, facts);
   return {
     jsonld: ld,
@@ -254,12 +268,20 @@ async function readPage(url, config) {
   const { openGraph, named } = metaTags(html);
   const ld = jsonLd(html);
   const micro = microdata(html);
+  const title = result.document.metadata?.title ?? openGraph.title ?? null;
+  const description = result.document.metadata?.description ?? openGraph.description ?? null;
   return {
     url: result.retrieval.final_url,
-    title: result.document.metadata?.title ?? openGraph.title ?? null,
-    description: result.document.metadata?.description ?? openGraph.description ?? null,
+    title,
+    description,
     markdown,
-    facts: factMap({ jsonld: ld, openGraph, meta: named, micro }),
+    facts: factMap({
+      jsonld: ld,
+      openGraph,
+      meta: named,
+      micro,
+      extra: { title, description, url: result.retrieval.final_url },
+    }),
     rich: {
       jsonld: ld,
       openGraph,

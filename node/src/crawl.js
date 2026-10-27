@@ -196,7 +196,12 @@ export async function v2CrawlStart(body = {}, config = {}) {
   await assertPublicHost(parseUrl(seed));
 
   const scrapeOptions = body.scrapeOptions ?? {};
-  const wanted = formatsOf({ formats: scrapeOptions.formats ?? body.formats });
+  // Formats keep their objects: `{ type: 'json', schema }` carries the schema,
+  // and a crawl that reduced it to the string 'json' would ask for structured
+  // data with nothing to structure it by.
+  const requestedFormats = (scrapeOptions.formats ?? body.formats) ?? ['markdown'];
+  const formatList = (Array.isArray(requestedFormats) ? requestedFormats : [requestedFormats]).filter(Boolean);
+  const wanted = formatsOf({ formats: formatList });
   const unsupported = [...wanted].filter((format) => !PRODUCIBLE.has(format));
   if (unsupported.length) {
     throw badRequest(`format ${unsupported.map((f) => `'${f}'`).join(', ')} is not produced by this deployment; available formats are ${[...PRODUCIBLE].join(', ')}`);
@@ -237,10 +242,10 @@ export async function v2CrawlStart(body = {}, config = {}) {
       delay: integer(body.delay, 0, 60, 0),
     },
     // The union of what the caller asked to see and what the frontier needs.
-    fetchFormats: [...new Set([...wanted, 'links'])],
+    fetchFormats: wanted.has('links') ? formatList : [...formatList, 'links'],
     wantsLinks: wanted.has('links'),
     scrapeOptions: {
-      formats: [...wanted],
+      formats: formatList,
       timeout: integer(scrapeOptions.timeout ?? scrapeOptions.timeout_ms ?? body.timeout, 100, 60_000, config.timeoutMs ?? 12_000),
     },
     maxConcurrency: integer(body.maxConcurrency, 1, MAX_CONCURRENCY, DEFAULT_CONCURRENCY),

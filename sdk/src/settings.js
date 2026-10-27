@@ -27,6 +27,11 @@ export const DEFAULTS = Object.freeze({
   searxngPort: 8888,
   /** Start the daemon automatically for one-shot commands. */
   autoStart: true,
+  /**
+   * A GitHub token, used only for the developer index when the free indexes
+   * refuse. Stored in the same 0600 file as everything else and never printed.
+   */
+  githubToken: null,
 });
 
 function bool(value, fallback) {
@@ -58,6 +63,7 @@ export function readSettings() {
     searxng: bool(env.WEBKIT_SEARXNG, file.searxng ?? DEFAULTS.searxng),
     searxngPort: integer(env.WEBKIT_SEARXNG_PORT, integer(file.searxngPort, DEFAULTS.searxngPort)),
     autoStart: env.WEBKIT_NO_AUTOSTART ? false : bool(file.autoStart, DEFAULTS.autoStart),
+    githubToken: env.WEBKIT_GITHUB_TOKEN || file.githubToken || DEFAULTS.githubToken,
   };
 }
 
@@ -130,6 +136,12 @@ export function engineEnv(settings, base = process.env) {
   delete env.FIRECRAWL_API_URL;
   if (upstream && !isSelf(upstream, settings)) env.WEBKIT_FIRECRAWL_UPSTREAM = upstream;
   else delete env.WEBKIT_FIRECRAWL_UPSTREAM;
+
+  // The developer index falls back to GitHub when Firecrawl refuses, and GitHub
+  // asks for a token once the anonymous quota is spent. It is passed through by
+  // name and never written into a log or a status response.
+  if (settings.githubToken) env.WEBKIT_GITHUB_TOKEN = settings.githubToken;
+  else delete env.WEBKIT_GITHUB_TOKEN;
 
   return env;
 }

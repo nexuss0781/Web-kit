@@ -94,14 +94,38 @@ export async function openEngine(settings) {
  */
 export async function loadSurface() {
   const dir = resolveEngineDir();
-  const [compat, config] = await Promise.all([
+  const modules = await Promise.all([
     import(pathToFileURL(path.join(dir, 'compat.js')).href),
     import(pathToFileURL(path.join(dir, 'config.js')).href),
+    import(pathToFileURL(path.join(dir, 'map.js')).href),
+    import(pathToFileURL(path.join(dir, 'crawl.js')).href),
+    import(pathToFileURL(path.join(dir, 'batch-scrape.js')).href),
+    import(pathToFileURL(path.join(dir, 'extract.js')).href),
+    import(pathToFileURL(path.join(dir, 'monitor.js')).href),
   ]);
+  const [compat, config, map, crawl, batch, extract, monitor] = modules;
   return {
     v2Search: compat.v2Search,
     v2Scrape: compat.v2Scrape,
     v2DeveloperSearch: compat.v2DeveloperSearch,
+    v2Map: map.v2Map,
+    v2CrawlStart: crawl.v2CrawlStart,
+    v2CrawlStatus: crawl.v2CrawlStatus,
+    v2CrawlCancel: crawl.v2CrawlCancel,
+    v2BatchStart: batch.v2BatchStart,
+    v2BatchStatus: batch.v2BatchStatus,
+    v2BatchCancel: batch.v2BatchCancel,
+    v2ExtractStart: extract.v2ExtractStart,
+    v2ExtractStatus: extract.v2ExtractStatus,
+    v2ExtractCancel: extract.v2ExtractCancel,
+    v2MonitorCreate: monitor.v2MonitorCreate,
+    v2MonitorList: monitor.v2MonitorList,
+    v2MonitorGet: monitor.v2MonitorGet,
+    v2MonitorUpdate: monitor.v2MonitorUpdate,
+    v2MonitorDelete: monitor.v2MonitorDelete,
+    v2MonitorRun: monitor.v2MonitorRun,
+    v2MonitorChecks: monitor.v2MonitorChecks,
+    v2MonitorCheck: monitor.v2MonitorCheck,
     loadConfig: config.loadConfig,
   };
 }

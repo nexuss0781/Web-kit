@@ -95,6 +95,23 @@ export async function doctor({ probe = true, settings = readSettings() } = {}) {
 
   const env = engineEnv(settings);
   add('tiers', true, env.WEBKIT_SEARCH_TIERS);
+  add(
+    'github token',
+    Boolean(settings.githubToken),
+    settings.githubToken ? 'stored; the developer index can fall back to GitHub' : 'not set; the developer index is anonymous-only',
+    false,
+  );
+
+  if (probe) {
+    const ollama = env.WEBKIT_OLLAMA_URL || env.OLLAMA_URL || 'http://127.0.0.1:11434';
+    try {
+      const tags = await fetchJson(`${ollama.replace(/\/+$/, '')}/api/tags`, { timeoutMs: 2000 });
+      const names = (tags.body?.models ?? []).map((entry) => entry.name).slice(0, 3);
+      add('local model', names.length > 0, names.length ? `${ollama} (${names.join(', ')})` : `${ollama} answers but has no model pulled`, false);
+    } catch {
+      add('local model', false, `not running at ${ollama}; json, summary and a prompted extract will say what is missing`, false);
+    }
+  }
 
   if (probe) {
     try {

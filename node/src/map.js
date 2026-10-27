@@ -14,7 +14,6 @@
 import crypto from 'node:crypto';
 import { fetchDocument } from './fetcher.js';
 import { parseUrl, assertPublicHost } from './safety.js';
-import { clamp } from './compat.js';
 import {
   linksInHtml,
   normalizeUrl,
@@ -22,6 +21,13 @@ import {
   sameSite,
   sitemapUrls,
 } from './discovery.js';
+
+/** Parse an integer and hold it between two bounds, falling back when absent. */
+function clamp(value, min, max, fallback) {
+  const parsed = Number.parseInt(value ?? '', 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(parsed, min), max);
+}
 
 const MIN_MAP_LIMIT = 1;
 const MAX_MAP_LIMIT = 100_000;

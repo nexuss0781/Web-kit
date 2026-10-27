@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readSettings, connectEnv } from './settings.js';
+import { readSettings, writeSettings, connectEnv } from './settings.js';
 import { paths } from './paths.js';
 import { provision, installed, healthy as searxngHealthy } from './searxng.js';
 import { start as startDaemon, stop as stopDaemon, serve, readDaemon, isRunning } from './daemon.js';
@@ -194,8 +194,247 @@ async function commandScrape(rest) {
   }
 }
 
-async function commandStart(rest) {
-  const { flags } = parseFlags(rest);
+function splitList(value) {
+  return String(value ?? '').split(',').map((entry) => entry.trim()).filter(Boolean);
+}
+
+function numberOf(value, fallback) {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+
+/**
+ * Waits for an asynchronous job.
+ *
+ * The engine answers a start with an id because a crawl can take minutes, and
+ * holding a request open for that long would time out somewhere in between. A
+ * shell command can afford to wait, so this is the one place that turns the
+ * start/status pair back into a single answer.
+ */
+async function waitForJob(fetchStatus, { label = 'job', timeoutMs = 10 * 60 * 1000, intervalMs = 1000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const status = await fetchStatus();
+    if (TERMINAL.has(status.status)) return status;
+    if (Date.now() >= deadline) {
+      throw new Error(`the ${label} is still ${status.status}; poll /v2/${label}/${status.id ?? ''} or raise the timeout`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
+function printDocuments(status) {
+  const documents = Array.isArray(status.data) ? status.data : [];
+  for (const document of documents) {
+    const metadata = document.metadata ?? {};
+    out(`${metadata.sourceURL ?? metadata.url ?? '(unknown)'}`);
+    if (metadata.title) out(`  ${metadata.title}`);
+  }
+  out(`\n${documents.length} of ${status.total ?? documents.length} pages, ${status.status}`);
+  if (status.warning) info(`warning: ${status.warning}`);
+}
+
+async function commandMap(rest) {
+  const { flags, positionals } = parseFlags(rest);
+  const url = positionals[0];
+  if (!url) throw new Error('usage: webkit map <url> [--limit 5000] [--search term] [--json]');
+
+  const body = { url, limit: numberOf(flags.limit, 5_000) };
+  if (flags.search) body.search = String(flags.search);
+  if (flags.sitemap) body.sitemap = String(flags.sitemap);
+
+  const client = await connected(settingsWith(flags), flags);
+  try {
+    const result = await client.map(body);
+    if (flags.json) {
+      out(JSON.stringify(result, null, 2));
+    } else {
+      for (const link of result.links ?? []) out(link.url);
+      out(`\n${(result.links ?? []).length} URLs`);
+      if (result.warning) info(`warning: ${result.warning}`);
+    }
+    return result;
+  } finally {
+    await client.close();
+  }
+}
+
+async function commandCrawl(rest) {
+  const { flags, positionals } = parseFlags(rest);
+  const url = positionals[0];
+  if (!url) throw new Error('usage: webkit crawl <url> [--limit 20] [--paths a,b] [--exclude c,d] [--depth N] [--no-wait] [--json]');
+
+  const body = { url, limit: numberOf(flags.limit, 20) };
+  if (flags.paths) body.includePaths = splitList(flags.paths);
+  if (flags.exclude) body.excludePaths = splitList(flags.exclude);
+  if (flags.depth) body.maxDiscoveryDepth = numberOf(flags.depth, 3);
+  if (flags.concurrency) body.maxConcurrency = numberOf(flags.concurrency, 4);
+  if (flags.sitemap) body.sitemap = String(flags.sitemap);
+
+  const client = await connected(settingsWith(flags), flags);
+  try {
+    const started = await client.crawl(body);
+    if (flags['no-wait']) {
+      out(flags.json ? JSON.stringify(started, null, 2) : `crawl ${started.id}\n  ${started.url ?? ''}`);
+      return started;
+    }
+    const status = await waitForJob(() => client.crawlStatus(started.id), { label: 'crawl' });
+    if (flags.json) out(JSON.stringify(status, null, 2));
+    else printDocuments(status);
+    if (status.error) throw new Error(status.error);
+    return status;
+  } finally {
+    await client.close();
+  }
+}
+
+async function commandBatch(rest) {
+  const { flags, positionals } = parseFlags(rest);
+  const urls = flags.urls ? splitList(flags.urls) : positionals;
+  if (!urls.length) throw new Error('usage: webkit batch <url...> [--no-wait] [--json]');
+
+  const client = await connected(settingsWith(flags), flags);
+  try {
+    const started = await client.batch({ urls });
+    if (flags['no-wait']) {
+      out(flags.json ? JSON.stringify(started, null, 2) : `batch ${started.id}\n  ${started.url ?? ''}`);
+      return started;
+    }
+    const status = await waitForJob(() => client.batchStatus(started.id), { label: 'batch' });
+    if (flags.json) out(JSON.stringify(status, null, 2));
+    else printDocuments(status);
+    if (status.error) throw new Error(status.error);
+    return status;
+  } finally {
+    await client.close();
+  }
+}
+
+/** A schema is either inline JSON or a path to a file that holds it. */
+function readSchema(value) {
+  const source = String(value ?? '').trim();
+  if (!source) return undefined;
+  if (source.startsWith('{') || source.startsWith('[')) return JSON.parse(source);
+  return JSON.parse(fs.readFileSync(path.resolve(source), 'utf8'));
+}
+
+async function commandExtract(rest) {
+  const { flags, positionals } = parseFlags(rest);
+  if (!positionals.length) throw new Error('usage: webkit extract <url...> [--schema file.json] [--prompt text] [--no-wait] [--json]');
+
+  const body = { urls: positionals };
+  if (flags.schema) body.schema = readSchema(flags.schema);
+  if (flags.prompt) body.prompt = String(flags.prompt);
+
+  const client = await connected(settingsWith(flags), flags);
+  try {
+    const started = await client.extract(body);
+    if (flags['no-wait']) {
+      out(flags.json ? JSON.stringify(started, null, 2) : `extract ${started.id}\n  ${started.url ?? ''}`);
+      return started;
+    }
+    const status = await waitForJob(() => client.extractStatus(started.id), { label: 'extract' });
+    if (flags.json) {
+      out(JSON.stringify(status, null, 2));
+    } else {
+      out(JSON.stringify(status.data ?? {}, null, 2));
+      if (status.model) info(`model: ${status.model}`);
+    }
+    if (status.error) throw new Error(status.error);
+    return status;
+  } finally {
+    await client.close();
+  }
+}
+
+async function commandMonitor(rest) {
+  const { flags, positionals } = parseFlags(rest);
+  const [action = 'list', ...args] = positionals;
+
+  const client = await connected(settingsWith(flags), flags);
+  try {
+    if (action === 'list') {
+      const result = await client.monitors();
+      if (flags.json) {
+        out(JSON.stringify(result, null, 2));
+      } else {
+        for (const monitor of result.data ?? []) {
+          out(`${monitor.id}  ${monitor.status.padEnd(6)}  ${monitor.name}`);
+          out(`  ${monitor.schedule.cron} (${monitor.schedule.timezone}), next ${monitor.nextRunAt ?? 'unknown'}`);
+        }
+        if (!(result.data ?? []).length) out('no monitors');
+      }
+      return result;
+    }
+
+    if (action === 'create') {
+      const name = String(flags.name ?? '').trim();
+      if (!name) throw new Error('usage: webkit monitor create --name "..." (--every "15 minutes" | --cron "*/15 * * * *") (--urls a,b | --crawl URL | --queries "a,b" --goal "...")');
+      const schedule = flags.cron ? { cron: String(flags.cron) } : { text: String(flags.every ?? 'every 30 minutes') };
+      const targets = [];
+      if (flags.urls) targets.push({ type: 'scrape', urls: splitList(flags.urls) });
+      if (flags.crawl) targets.push({ type: 'crawl', url: String(flags.crawl), crawlOptions: { limit: numberOf(flags.limit, 10) } });
+      if (flags.queries) targets.push({ type: 'search', queries: splitList(flags.queries), maxResults: numberOf(flags.results, 10) });
+      if (!targets.length) throw new Error('a monitor needs at least one target: --urls, --crawl or --queries');
+
+      const body = { name, schedule, targets };
+      if (flags.goal) body.goal = String(flags.goal);
+      const result = await client.createMonitor(body);
+      out(flags.json ? JSON.stringify(result, null, 2) : `${result.data.id}  ${result.data.name}\n  ${result.data.schedule.cron}, next ${result.data.nextRunAt}`);
+      return result;
+    }
+
+    if (action === 'get') {
+      const result = await client.getMonitor(args[0]);
+      out(JSON.stringify(result.data, null, 2));
+      return result;
+    }
+
+    if (action === 'run') {
+      const result = await client.runMonitor(args[0]);
+      const check = result.data;
+      out(flags.json ? JSON.stringify(result, null, 2) : `${check?.id ?? 'check'}  ${check?.status ?? 'unknown'}  ${JSON.stringify(check?.summary ?? {})}`);
+      return result;
+    }
+
+    if (action === 'checks') {
+      const result = await client.monitorChecks(args[0]);
+      if (flags.json) {
+        out(JSON.stringify(result, null, 2));
+      } else {
+        for (const check of result.data ?? []) out(`${check.id}  ${check.status}  ${check.startedAt}  ${JSON.stringify(check.summary)}`);
+        if (!(result.data ?? []).length) out('no checks yet');
+      }
+      return result;
+    }
+
+    if (action === 'check') {
+      const result = await client.monitorCheck(args[0], args[1]);
+      out(JSON.stringify(result.data, null, 2));
+      return result;
+    }
+
+    if (action === 'delete' || action === 'remove') {
+      const result = await client.deleteMonitor(args[0]);
+      out('deleted');
+      return result;
+    }
+
+    if (action === 'pause' || action === 'resume') {
+      const result = await client.updateMonitor(args[0], { status: action === 'pause' ? 'paused' : 'active' });
+      out(`${result.data.id}  ${result.data.status}`);
+      return result;
+    }
+
+    throw new Error(`unknown monitor action '${action}'. Use list, create, get, run, checks, check, pause, resume or delete.`);
+  } finally {
+    await client.close();
+  }
+}
+
+async function commandStart(rest) {  const { flags } = parseFlags(rest);
   const settings = settingsWith(flags);
 
   if (settings.searxng && !installed()) {
@@ -298,6 +537,62 @@ function commandSkill() {
   out(file);
 }
 
+/**
+ * Settings that can be stored in `~/.webkit/config.json`.
+ *
+ * Only secrets and values a user changes once. A per-command override belongs
+ * on the command's own flags, not in a file that outlives the command.
+ */
+const CONFIG_KEYS = new Map([
+  ['github-token', 'githubToken'],
+  ['githubToken', 'githubToken'],
+]);
+
+/**
+ * `webkit config`: what is stored, and how to change the one secret that is
+ * worth storing.
+ *
+ * A value written here is never echoed back. Not because the file is readable
+ * -- it is the user's own file -- but because a terminal scrollback and a
+ * pasted bug report are how credentials escape. The listing says whether a
+ * value is set, which is the only question it is asked.
+ */
+function commandConfig(rest) {
+  const [action = 'list', rawKey, ...value] = rest;
+
+  if (action === 'list' || action === 'show' || action === 'get') {
+    const settings = readSettings();
+    out(`home      ${paths.home}`);
+    out(`port      ${settings.port}`);
+    out(`searxng   ${settings.searxng ? `on (port ${settings.searxngPort})` : 'off'}`);
+    out(`token     ${settings.token ? 'set' : 'not set'}`);
+    out(`github    ${settings.githubToken ? 'set' : 'not set'}`);
+    return;
+  }
+
+  if (action !== 'set' && action !== 'unset') {
+    throw new Error(`unknown config action '${action}'. Use \`webkit config list\` or \`webkit config set github-token <token>\`.`);
+  }
+  if (!rawKey) throw new Error(`usage: webkit config ${action} github-token${action === 'set' ? ' <token>' : ''}`);
+
+  const key = CONFIG_KEYS.get(rawKey);
+  if (!key) {
+    throw new Error(`unknown setting '${rawKey}'. Settable settings: ${[...new Set(CONFIG_KEYS.keys())].join(', ')}`);
+  }
+
+  if (action === 'unset') {
+    writeSettings({ [key]: null });
+    out(`${rawKey} cleared`);
+    return;
+  }
+
+  const token = value.join(' ').trim();
+  if (!token) throw new Error('usage: webkit config set github-token <token>');
+  writeSettings({ [key]: token });
+  // The value is deliberately absent from this line and from every later one.
+  out(`${rawKey} stored in ${paths.config}`);
+}
+
 function commandHelp() {
   out(`Web-Kit ${version()} - self-hosted web access for agents
 
@@ -311,7 +606,15 @@ Usage:
 
   webkit search <query> [options]    search the web
   webkit scrape <url> [options]      read one page
+  webkit map <url> [options]         discover links on a site
+  webkit crawl <url> [options]       crawl a site and collect pages
+  webkit batch <url...> [options]    scrape a list of pages
+  webkit extract <url...> [options] extract structured data from pages
+  webkit monitor <action> [...]     watch pages for changes
   webkit env [--sh|--json]           variables that point the Firecrawl CLI here
+  webkit config [list]               stored settings, secrets reported as set or not
+  webkit config set github-token X   store a GitHub token for the developer index
+  webkit config unset github-token   forget it
   webkit skill                       print the path of the agent skill
 
 Search options:
@@ -350,7 +653,13 @@ export async function main(argv) {
     case 'serve': await serve(settingsWith(parseFlags(rest).flags), { log: info }); break;
     case 'search': await commandSearch(rest); break;
     case 'scrape': await commandScrape(rest); break;
+    case 'map': await commandMap(rest); break;
+    case 'crawl': await commandCrawl(rest); break;
+    case 'batch': await commandBatch(rest); break;
+    case 'extract': await commandExtract(rest); break;
+    case 'monitor': await commandMonitor(rest); break;
     case 'env': await commandEnv(rest); break;
+    case 'config': commandConfig(rest); break;
     case 'skill': commandSkill(); break;
     case 'version': case '--version': case '-v': out(version()); break;
     case 'help': case '--help': case '-h': commandHelp(); break;

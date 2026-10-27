@@ -125,6 +125,13 @@ export async function v2BatchStart(body = {}, config = {}) {
     throw badRequest(`format ${unsupported.map((f) => `'${f}'`).join(', ')} is not produced by this deployment; available formats are ${[...PRODUCIBLE].join(', ')}`);
   }
 
+  // Objects survive: `{ type: 'json', schema }` is the whole request, and a
+  // list of type names would ask for structured data with nothing to structure.
+  const requestedFormats = (body.formats ?? ['markdown']);
+  const formatList = (Array.isArray(requestedFormats) ? requestedFormats : [requestedFormats])
+    .filter(Boolean)
+    .map((entry) => (typeof entry === 'string' ? entry : { ...entry }));
+
   const ignoreInvalid = body.ignoreInvalidURLs !== false;
   const invalidURLs = [];
   const urls = [];
@@ -153,7 +160,7 @@ export async function v2BatchStart(body = {}, config = {}) {
     webhook: typeof body.webhook === 'string' ? body.webhook : null,
     urls,
     data: [],
-    formats: [...wanted],
+    formats: formatList,
     timeout: integer(body.timeout ?? body.timeout_ms, 100, 60_000, config.timeoutMs ?? 12_000),
     maxConcurrency: integer(body.maxConcurrency, 1, MAX_CONCURRENCY, DEFAULT_CONCURRENCY),
     delay: integer(body.delay, 0, 60, 0),

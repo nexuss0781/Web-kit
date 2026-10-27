@@ -401,6 +401,15 @@ export async function v2Search(body = {}, config = {}) {
     if (groupCount(groups) >= need) break;
   }
 
+  // A tier may answer with more than was asked for -- an upstream minimum, or
+  // two tiers merging -- and the caller's limit is the one that decides. Applied
+  // per group, because "five results" for a news search means five news items.
+  for (const [name, rows] of Object.entries(groups)) {
+    if (rows.length <= limit) continue;
+    groups[name] = rows.slice(0, limit);
+    groups[name].forEach((row, index) => { row.position = index + 1; });
+  }
+
   const data = { ...groups };
   // The extras belong to the search, not to a provider, so they sit beside the
   // groups. A caller that does not know the field ignores it; a caller reading
@@ -512,8 +521,14 @@ export async function v2Scrape(body = {}, config = {}) {
 
   // The deterministic reader answers a schema with no model, and answers it
   // from what the page states about itself, which is often better than a guess.
+  const pageFacts = {
+    title: metadata.title ?? null,
+    description: metadata.description ?? null,
+    url: result.retrieval.final_url,
+  };
+
   if (formats.has('deterministicJson')) {
-    data.json = structuredFromHtml(raw ?? '', specs.get('deterministicJson').schema);
+    data.json = structuredFromHtml(raw ?? '', specs.get('deterministicJson').schema, pageFacts);
   }
 
   const modelFormats = ['json', 'extract'].filter((format) => formats.has(format));
@@ -541,7 +556,7 @@ export async function v2Scrape(body = {}, config = {}) {
             code: 'E_NO_LLM',
           });
         }
-        const shaped = structuredFromHtml(raw ?? '', spec.schema);
+        const shaped = structuredFromHtml(raw ?? '', spec.schema, pageFacts);
         if (format === 'extract') data.extract = shaped;
         else data.json = shaped;
       }
