@@ -33,11 +33,18 @@ export function resolveEngineDir() {
 
 export async function loadEngine() {
   const dir = resolveEngineDir();
-  const [server, config] = await Promise.all([
+  const [server, config, monitor] = await Promise.all([
     import(pathToFileURL(path.join(dir, 'server.js')).href),
     import(pathToFileURL(path.join(dir, 'config.js')).href),
+    import(pathToFileURL(path.join(dir, 'monitor.js')).href),
   ]);
-  return { dir, createServer: server.createServer, loadConfig: config.loadConfig };
+  return {
+    dir,
+    createServer: server.createServer,
+    loadConfig: config.loadConfig,
+    startScheduler: monitor.startScheduler,
+    stopScheduler: monitor.stopScheduler,
+  };
 }
 
 /**
@@ -48,7 +55,7 @@ export async function loadEngine() {
  * for a global.
  */
 export async function openEngine(settings) {
-  const { createServer, loadConfig } = await loadEngine();
+  const { createServer, loadConfig, startScheduler, stopScheduler } = await loadEngine();
   const config = loadConfig(engineEnv(settings));
   const server = createServer(config);
 
@@ -62,11 +69,19 @@ export async function openEngine(settings) {
     });
   });
 
+  // A daemon exists to keep promises made in an earlier request, and a monitor
+  // is one of them. One-shots that open an engine in-process leave the clock
+  // alone: the process would exit before a schedule came due anyway.
+  if (settings.monitors !== false) startScheduler(config);
+
   return {
     server,
     config,
     url: `http://${settings.host}:${settings.port}`,
-    close: () => new Promise((resolve) => server.close(resolve)),
+    close: () => new Promise((resolve) => {
+      stopScheduler();
+      server.close(resolve);
+    }),
   };
 }
 

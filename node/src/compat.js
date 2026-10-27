@@ -29,11 +29,23 @@ import crypto from 'node:crypto';
 import { fetchDocument } from './fetcher.js';
 import { htmlToMarkdown } from './markdown.js';
 import { search as localSearch, enabledProviders } from './search.js';
+import { chatJson, chatText, describeModel } from './llm.js';
+import { structuredFromHtml } from './extract.js';
+import { extractAttributes } from './selectors.js';
 import * as firecrawl from './firecrawl.js';
 import searxngProvider, { categoriesFor } from './providers/searxng.js';
 
-/** Formats that are a document this service can actually produce. */
-const PRODUCIBLE = new Set(['markdown', 'html', 'rawHtml', 'links', 'images']);
+/**
+ * Formats that are a document this service can actually produce.
+ *
+ * `json`, `summary` and `question` are produced when a model exists -- a local
+ * Ollama, an OpenAI-compatible endpoint, or a keyed Firecrawl as the last tier.
+ * `attributes` needs no model: it reads data attributes out of the markup.
+ */
+export const PRODUCIBLE = new Set([
+  'markdown', 'html', 'rawHtml', 'links', 'images',
+  'json', 'summary', 'question', 'attributes', 'extract', 'deterministicJson',
+]);
 
 /** The order when a deployment has not named one. */
 const DEFAULT_TIERS = ['searxng', 'firecrawl-keyless', 'verticals', 'firecrawl-key'];
@@ -116,13 +128,32 @@ function recency(body) {
   return TIME_RANGE.get(named) ?? (['day', 'week', 'month', 'year'].includes(named) ? named : undefined);
 }
 
-function formatsOf(body) {
-  const raw = body.formats ?? ['markdown'];
-  const list = (Array.isArray(raw) ? raw : [raw])
-    .map((entry) => (typeof entry === 'string' ? entry : entry?.type))
-    .filter(Boolean)
-    .map((entry) => String(entry));
-  return new Set(list.length ? list : ['markdown']);
+/**
+ * The requested formats, with their options.
+ *
+ * Firecrawl accepts `formats: ['markdown']` and `formats: [{ type: 'json',
+ * schema, prompt }]` in the same array. Both forms mean the same thing; only
+ * the second carries everything. A Map keeps one entry per type, and a later
+ * object wins over an earlier string, so a caller that says a format twice gets
+ * the version that says more.
+ */
+export function formatSpecs(body) {
+  const raw = body?.formats ?? ['markdown'];
+  const list = Array.isArray(raw) ? raw : [raw];
+  const specs = new Map();
+  for (const entry of list) {
+    if (typeof entry === 'string' && entry) {
+      specs.set(entry, { type: entry });
+    } else if (entry && typeof entry === 'object' && typeof entry.type === 'string') {
+      specs.set(entry.type, entry);
+    }
+  }
+  if (specs.size === 0) specs.set('markdown', { type: 'markdown' });
+  return specs;
+}
+
+export function formatsOf(body) {
+  return new Set(formatSpecs(body).keys());
 }
 
 function badRequest(message) {
@@ -412,22 +443,30 @@ export async function v2Search(body = {}, config = {}) {
  * One URL in, the requested representations out. The formats are produced from
  * a single read: asking for markdown and links is one fetch and two views of
  * it, not two fetches.
+ *
+ * Model-shaped formats follow the same tiers as `extract`: a local model if one
+ * is running, the deterministic reader when the request can be answered from
+ * structured markup, a keyed Firecrawl when a key exists, and an honest refusal
+ * when a prompt needs a model and there is none.
  */
 export async function v2Scrape(body = {}, config = {}) {
   const target = text(body.url);
   if (!target) throw badRequest('url is required');
 
-  const formats = formatsOf(body);
+  const specs = formatSpecs(body);
+  const formats = new Set(specs.keys());
   const unsupported = [...formats].filter((format) => !PRODUCIBLE.has(format));
   if (unsupported.length) {
     throw badRequest(`format ${unsupported.map((f) => `'${f}'`).join(', ')} is not produced by this deployment; available formats are ${[...PRODUCIBLE].join(', ')}`);
   }
 
   const wantsHtml = formats.has('html') || formats.has('rawHtml');
+  // Attributes are read from markup, so they need the raw document too.
+  const wantsMarkup = wantsHtml || formats.has('attributes');
   const result = await fetchDocument(target, {
     // Raw HTML is what both `html` and `rawHtml` are made from; markdown is
     // derived from it in that case, so one read serves every requested view.
-    mode: wantsHtml ? 'raw' : 'markdown',
+    mode: wantsMarkup ? 'raw' : 'markdown',
     timeout_ms: clamp(body.timeout ?? body.timeout_ms, 100, config.timeoutMs, config.timeoutMs),
     max_bytes: config.maxBodyBytes,
     include_links: formats.has('links'),
@@ -465,6 +504,96 @@ export async function v2Scrape(body = {}, config = {}) {
   if (formats.has('rawHtml')) data.rawHtml = raw ?? markdown;
   if (formats.has('links')) data.links = metadata.links ?? [];
   if (formats.has('images')) data.images = result.document.images ?? [];
+
+  if (formats.has('attributes')) {
+    const spec = specs.get('attributes');
+    data.attributes = extractAttributes(raw ?? '', [].concat(spec.selectors ?? []));
+  }
+
+  // The deterministic reader answers a schema with no model, and answers it
+  // from what the page states about itself, which is often better than a guess.
+  if (formats.has('deterministicJson')) {
+    data.json = structuredFromHtml(raw ?? '', specs.get('deterministicJson').schema);
+  }
+
+  const modelFormats = ['json', 'extract'].filter((format) => formats.has(format));
+  const needsText = modelFormats.length > 0 || formats.has('summary') || formats.has('question');
+  if (needsText) {
+    const model = await describeModel(config);
+    const wantsPrompt = [...modelFormats, 'summary', 'question'].some((format) => {
+      const spec = specs.get(format);
+      if (!spec) return false;
+      if (format === 'summary') return false;
+      return Boolean(text(spec.prompt ?? spec.question)) && !spec.schema;
+    });
+
+    if (!model) {
+      if (config.firecrawlApiKey) {
+        // A model exists upstream and the caller supplied a key; the request is
+        // theirs, so it is forwarded rather than partially answered.
+        return firecrawl.scrapeV2(body, config);
+      }
+      for (const format of modelFormats) {
+        const spec = specs.get(format);
+        if (!spec.schema || text(spec.prompt)) {
+          throw Object.assign(new Error(`format '${format}' needs a model: start Ollama, set OPENAI_API_KEY, or provide a Firecrawl key; 'json' with only a schema is answered from structured markup, 'attributes' needs no model`), {
+            status: 501,
+            code: 'E_NO_LLM',
+          });
+        }
+        const shaped = structuredFromHtml(raw ?? '', spec.schema);
+        if (format === 'extract') data.extract = shaped;
+        else data.json = shaped;
+      }
+    } else {
+      const pageText = (markdown || raw || '').slice(0, 40_000);
+      let tokensUsed = 0;
+
+      if (formats.has('json') || formats.has('extract')) {
+        const format = formats.has('json') ? 'json' : 'extract';
+        const spec = specs.get(format);
+        const answer = await chatJson({
+          system: 'You extract facts from a web page. Use only the text provided. Never invent a value: omit a field the page does not state.',
+          prompt: `${text(spec.prompt) || 'Extract the data described by the schema from this page.'}\n\n${pageText}`,
+          schema: spec.schema ?? undefined,
+          config,
+        });
+        if (format === 'extract') data.extract = answer.json;
+        else data.json = answer.json;
+        tokensUsed += answer.tokensUsed ?? 0;
+      }
+
+      if (formats.has('summary')) {
+        const answer = await chatText({
+          system: 'You summarise web pages. Use only the text provided, and keep the summary under 150 words.',
+          prompt: pageText || metadata.description || metadata.title || '',
+          config,
+        });
+        data.summary = answer.text;
+        tokensUsed += answer.tokensUsed ?? 0;
+      }
+
+      if (formats.has('question')) {
+        const question = text(specs.get('question').question ?? specs.get('question').prompt);
+        if (question) {
+          const answer = await chatText({
+            system: 'You answer questions from a web page. Answer from the text provided; if it does not contain the answer, say so.',
+            prompt: `${question}\n\n${pageText}`,
+            config,
+          });
+          data.answer = answer.text;
+          tokensUsed += answer.tokensUsed ?? 0;
+        }
+      }
+
+      data.metadata.model = `${model.provider}:${model.model}`;
+      data.metadata.tokensUsed = tokensUsed || undefined;
+    }
+
+    // `wantsPrompt` is documentation of what the gate above is about: a schema
+    // can be answered without a model, a free-form prompt cannot.
+    void wantsPrompt;
+  }
 
   return { success: true, data };
 }

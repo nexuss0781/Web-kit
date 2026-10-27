@@ -61,6 +61,7 @@ export async function requestJson(target, {
   apiKey,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   headers = {},
+  allowFailure = false,
 } = {}) {
   const parsed = new URL(target);
   const send = parsed.protocol === 'https:' ? httpsRequest : httpRequest;
@@ -130,8 +131,10 @@ export async function requestJson(target, {
             let body;
             try { body = JSON.parse(text); } catch { throw new Error(`${parsed.hostname} did not answer with JSON`); }
             // Firecrawl answers 200 with success:false for a refused request, so
-            // the status alone does not say whether this worked.
-            if (body.success === false) {
+            // the status alone does not say whether this worked. A status read
+            // is the exception: a failed job is a real answer about a real job,
+            // and turning it into a thrown error would lose its `error` field.
+            if (body.success === false && !allowFailure) {
               const detail = body.error ?? JSON.stringify(body.details ?? '').slice(0, 200);
               throw new Error(`firecrawl refused the request: ${detail}`);
             }
@@ -251,5 +254,44 @@ export async function v2DeveloperSearch(params, { apiKey, timeoutMs, baseUrl } =
     method: 'GET',
     apiKey,
     timeoutMs,
+  });
+}
+
+/**
+ * The keyed extract, as the last tier.
+ *
+ * Only reached when a caller wants a prompted extraction and this deployment
+ * has no local model but does have a Firecrawl key. The request is forwarded
+ * rather than reformulated: the prompt and schema are the caller's, and the
+ * model that understands them is upstream.
+ */
+export async function extract(body, config = {}) {
+  return requestJson(`${config.firecrawlApiUrl || `https://${API_HOST}`}/v2/extract`, {
+    body,
+    apiKey: config.firecrawlApiKey,
+    timeoutMs: config.llmTimeoutMs ?? DEFAULT_TIMEOUT_MS,
+  });
+}
+
+/** Reads a forwarded extract job. `success: false` here describes the job. */
+export async function extractStatus(id, config = {}) {
+  return requestJson(`${config.firecrawlApiUrl || `https://${API_HOST}`}/v2/extract/${encodeURIComponent(id)}`, {
+    method: 'GET',
+    apiKey: config.firecrawlApiKey,
+    timeoutMs: config.timeoutMs,
+    allowFailure: true,
+  });
+}
+
+/**
+ * A scrape forwarded upstream when it asks for something only a model or a
+ * browser can produce and a key is configured. The body is passed as-is: it is
+ * the caller's request, and reformulating it would be guessing.
+ */
+export async function scrapeV2(body, config = {}) {
+  return requestJson(`${config.firecrawlApiUrl || `https://${API_HOST}`}/v2/scrape`, {
+    body,
+    apiKey: config.firecrawlApiKey,
+    timeoutMs: config.llmTimeoutMs ?? DEFAULT_TIMEOUT_MS,
   });
 }

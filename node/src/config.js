@@ -43,6 +43,20 @@ export function loadConfig(env = process.env) {
     instance: env.WEBKIT_INSTANCE || null,
     userAgent: env.WEBKIT_USER_AGENT || 'Web-Kit/0.1 (+https://github.com/nexuss0781/Web-kit)',
 
+    /**
+     * Where asynchronous state lives: crawl, batch and extract jobs, and the
+     * monitor list. `WEBKIT_HOME` is the SDK's directory, so a daemon and a
+     * `webkit` one-shot command see the same jobs without being configured
+     * twice. Null means `~/.webkit`, resolved by the job store.
+     */
+    dataDir: env.WEBKIT_HOME || env.WEBKIT_DATA_DIR || null,
+    /**
+     * The address a job's status URL should name. A local engine is reached at
+     * loopback, but a deployment behind a proxy would otherwise hand out a
+     * `127.0.0.1` URL nobody else can open.
+     */
+    publicUrl: (env.WEBKIT_PUBLIC_URL || '').replace(/\/+$/, '') || null,
+
     /** Empty means every provider that is available in this deployment. */
     providers: list(env.WEBKIT_PROVIDERS, []),
     searxngUrls: list(env.WEBKIT_SEARXNG_URLS || env.WEBKIT_SEARXNG_URL, []),
@@ -111,5 +125,24 @@ export function loadConfig(env = process.env) {
     maxRedirects: integer(env.WEBKIT_MAX_REDIRECTS, 5),
     timeoutMs: integer(env.WEBKIT_REQUEST_TIMEOUT_MS, 12_000),
     searchTimeoutMs: integer(env.WEBKIT_SEARCH_TIMEOUT_MS, 10_000),
+
+    /**
+     * An optional local model, used for the formats that need judgement rather
+     * than parsing: `json`, `summary`, and a prompted `extract`.
+     *
+     * This project deliberately runs no browser, so these cannot be answered by
+     * rendering. They can be answered by a model, and the cheapest place to get
+     * one is the machine the service is already on. Ollama is the default
+     * probe; an OpenAI-compatible endpoint is the alternative for a deployment
+     * that already has one. Neither is required: without them the deterministic
+     * formats still work and the model-backed ones say exactly what is missing.
+     */
+    ollamaUrl: (env.WEBKIT_OLLAMA_URL || env.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/+$/, ''),
+    llmProvider: (env.WEBKIT_LLM_PROVIDER || '').toLowerCase() || null,
+    llmModel: env.WEBKIT_LLM_MODEL || null,
+    llmTimeoutMs: integer(env.WEBKIT_LLM_TIMEOUT_MS, 90_000),
+    openaiApiKey: env.OPENAI_API_KEY || null,
+    openaiBaseUrl: (env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, ''),
+    openaiModel: env.WEBKIT_LLM_MODEL || env.OPENAI_MODEL || 'gpt-4o-mini',
   };
 }

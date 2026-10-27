@@ -17,6 +17,22 @@ import { describeProviders, enabledProviders } from './providers/index.js';
 import { fetchDocument, FetchError } from './fetcher.js';
 import { UnsafeUrlError } from './safety.js';
 import { v2Search, v2Scrape, v2DeveloperSearch } from './compat.js';
+import { v2Map } from './map.js';
+import { v2CrawlStart, v2CrawlStatus, v2CrawlCancel } from './crawl.js';
+import { v2BatchStart, v2BatchStatus, v2BatchCancel } from './batch-scrape.js';
+import { v2ExtractStart, v2ExtractStatus, v2ExtractCancel } from './extract.js';
+import {
+  startScheduler,
+  stopScheduler,
+  v2MonitorCheck,
+  v2MonitorChecks,
+  v2MonitorCreate,
+  v2MonitorDelete,
+  v2MonitorGet,
+  v2MonitorList,
+  v2MonitorRun,
+  v2MonitorUpdate,
+} from './monitor.js';
 
 const config = loadConfig();
 
@@ -155,7 +171,8 @@ export function makeRoutes(config) {
       service: 'web-kit',
       routes: [
         '/healthz', '/readyz', '/v1/providers', '/v1/search', '/v1/fetch',
-        '/v2/search', '/v2/scrape', '/v2/search/developer',
+        '/v2/search', '/v2/scrape', '/v2/map', '/v2/crawl', '/v2/batch/scrape',
+        '/v2/extract', '/v2/monitor', '/v2/search/developer',
       ],
       providers: describeProviders(config),
       auth_required: Boolean(config.apiToken),
@@ -238,6 +255,20 @@ export function makeRoutes(config) {
 
   'POST /v2/scrape': async (_query, _url, body) => ({ status: 200, json: await v2Scrape(body, config) }),
 
+  /**
+   * `map` is the one route that answers synchronously: it reads a sitemap and a
+   * page and returns a list, which is a map. `crawl`, `batch/scrape` and
+   * `extract` outlive a comfortable request, so they answer with an id.
+   */
+  'POST /v2/map': async (_query, _url, body) => ({ status: 200, json: await v2Map(body, config) }),
+  'POST /v2/crawl': async (_query, _url, body) => ({ status: 200, json: await v2CrawlStart(body, config) }),
+  'POST /v2/batch/scrape': async (_query, _url, body) => ({ status: 200, json: await v2BatchStart(body, config) }),
+  'POST /v2/extract': async (_query, _url, body) => ({ status: 200, json: await v2ExtractStart(body, config) }),
+
+  // Monitors answer their own shapes, so the route is the handler.
+  'GET /v2/monitor': async (_query, url) => v2MonitorList(Object.fromEntries(url.searchParams), config),
+  'POST /v2/monitor': async (_query, _url, body) => v2MonitorCreate(body, config),
+
   'GET /v2/search/developer': async (_query, url) => ({
     status: 200,
     json: await v2DeveloperSearch(Object.fromEntries(url.searchParams), config),
@@ -247,6 +278,48 @@ export function makeRoutes(config) {
     json: await v2DeveloperSearch(body, config),
   }),
   };
+}
+
+/**
+ * Routes with an id in the path.
+ *
+ * The exact-key table cannot express `/v2/crawl/:id`, and a pattern array is
+ * both smaller and clearer than teaching the table about segments. The id
+ * pattern is the same one the job store accepts, so a path that cannot name a
+ * job is a 404 rather than a lookup that fails later.
+ */
+const JOB_ID = '([A-Za-z0-9_-]{1,120})';
+
+const DYNAMIC_ROUTES = [
+  { method: 'GET', pattern: new RegExp(`^/v2/crawl/${JOB_ID}$`), handler: (m, _q, _b, c) => v2CrawlStatus(m[1], c) },
+  { method: 'DELETE', pattern: new RegExp(`^/v2/crawl/${JOB_ID}$`), handler: (m, _q, _b, c) => v2CrawlCancel(m[1], c) },
+
+  { method: 'GET', pattern: new RegExp(`^/v2/batch/scrape/${JOB_ID}$`), handler: (m, _q, _b, c) => v2BatchStatus(m[1], c) },
+  { method: 'DELETE', pattern: new RegExp(`^/v2/batch/scrape/${JOB_ID}$`), handler: (m, _q, _b, c) => v2BatchCancel(m[1], c) },
+
+  { method: 'GET', pattern: new RegExp(`^/v2/extract/${JOB_ID}$`), handler: (m, _q, _b, c) => v2ExtractStatus(m[1], c) },
+  { method: 'DELETE', pattern: new RegExp(`^/v2/extract/${JOB_ID}$`), handler: (m, _q, _b, c) => v2ExtractCancel(m[1], c) },
+
+  { method: 'GET', pattern: new RegExp(`^/v2/monitor/${JOB_ID}$`), handler: (m, _q, _b, c) => v2MonitorGet(m[1], c) },
+  { method: 'PATCH', pattern: new RegExp(`^/v2/monitor/${JOB_ID}$`), handler: (m, _q, b, c) => v2MonitorUpdate(m[1], b, c) },
+  { method: 'PUT', pattern: new RegExp(`^/v2/monitor/${JOB_ID}$`), handler: (m, _q, b, c) => v2MonitorUpdate(m[1], b, c) },
+  { method: 'DELETE', pattern: new RegExp(`^/v2/monitor/${JOB_ID}$`), handler: (m, _q, _b, c) => v2MonitorDelete(m[1], c) },
+  { method: 'POST', pattern: new RegExp(`^/v2/monitor/${JOB_ID}/run$`), handler: (m, _q, _b, c) => v2MonitorRun(m[1], c) },
+  { method: 'GET', pattern: new RegExp(`^/v2/monitor/${JOB_ID}/checks$`), handler: (m, q, _b, c) => v2MonitorChecks(m[1], q, c) },
+  {
+    method: 'GET',
+    pattern: new RegExp(`^/v2/monitor/${JOB_ID}/checks/${JOB_ID}$`),
+    handler: (m, q, _b, c) => v2MonitorCheck(m[1], m[2], q, c),
+  },
+];
+
+function matchDynamic(method, pathname) {
+  for (const route of DYNAMIC_ROUTES) {
+    if (route.method !== method) continue;
+    const match = route.pattern.exec(pathname);
+    if (match) return { route, match };
+  }
+  return null;
 }
 
 export function createServer(configOverride) {
@@ -273,7 +346,8 @@ export function createServer(configOverride) {
     }
 
     const route = routes[`${request.method} ${url.pathname}`];
-    if (!route) {
+    const dynamic = route ? null : matchDynamic(request.method, url.pathname);
+    if (!route && !dynamic) {
       if (isCompat) {
         return sendJson(response, 404, { success: false, error: `no route for ${request.method} ${url.pathname}` });
       }
@@ -287,7 +361,9 @@ export function createServer(configOverride) {
       const body = request.method === 'POST' || request.method === 'PUT' || request.method === 'PATCH'
         ? await readBody(request, active)
         : {};
-      const result = await route(query, url, body);
+      const result = dynamic
+        ? await dynamic.route.handler(dynamic.match, query, body, active)
+        : await route(query, url, body);
       return sendJson(response, result.status, result.json);
     } catch (error) {
       if (isCompat) {
@@ -304,10 +380,20 @@ export function createServer(configOverride) {
 
 const isDirectExecution = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isDirectExecution) {
-  createServer().listen(config.port, config.host, () => {
+  const server = createServer();
+  server.listen(config.port, config.host, () => {
     console.log(`web-kit listening on ${config.bindAddr}; instances: ${config.searxngUrls.join(', ')}`);
     console.log(`auth: ${config.apiToken ? 'required' : 'open'}`);
+    // Monitors are a standing promise: a created monitor is expected to run
+    // without anyone polling it, so the clock starts with the listener.
+    if (startScheduler(config)) console.log(`monitors: scheduling under ${config.dataDir}`);
   });
+  const shutdown = () => {
+    stopScheduler();
+    server.close(() => process.exit(0));
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
 }
 
 export { config };
