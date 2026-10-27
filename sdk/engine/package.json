@@ -1,0 +1,5 @@
+{
+  "name": "webkit-engine",
+  "private": true,
+  "type": "module"
+}
