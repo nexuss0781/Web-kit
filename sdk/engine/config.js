@@ -144,5 +144,14 @@ export function loadConfig(env = process.env) {
     openaiApiKey: env.OPENAI_API_KEY || null,
     openaiBaseUrl: (env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, ''),
     openaiModel: env.WEBKIT_LLM_MODEL || env.OPENAI_MODEL || 'gpt-4o-mini',
+
+    /**
+     * Nexuss AI Router (NAR) — a single OpenAI-compatible endpoint in front of
+     * free model providers with automatic failover. The key is baked into the
+     * deployment or provided via environment.
+     */
+    narBaseUrl: (env.NAR_BASE_URL || env.OMNIROUTE_BASE_URL || '').replace(/\/+$/, '') || null,
+    narApiKey: env.NAR_API_KEY || env.OMNIROUTE_AI_API_KEY || null,
+    narModel: env.NAR_MODEL || env.WEBKIT_LLM_MODEL || 'auto',
   };
 }

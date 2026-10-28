@@ -1,20 +1,12 @@
 /**
  * The optional model behind `json`, `summary` and a prompted `extract`.
  *
- * Everything else in this service is deterministic: parse the page, answer with
- * what it says. Those three formats cannot be, because "what is this page
- * about, in the caller's schema" is a judgement. Firecrawl answers it with a
- * hosted model; this deployment answers it with one on the machine it already
- * runs on, and only when there is one.
+ * Backends, in priority when auto-selected:
  *
- * Two backends, one interface:
- *
- * - Ollama, probed locally. Free, keyless, and the reason these formats work
- *   without an account.
+ * - Nexuss AI Router (NAR): a single endpoint in front of free model providers
+ *   with automatic failover. Configured via NAR_BASE_URL / NAR_API_KEY.
+ * - Ollama, probed locally. Free, keyless.
  * - An OpenAI-compatible endpoint, when the deployment has a key.
- *
- * Nothing is required. If neither answers, the caller gets the reason and the
- * command that would fix it, never an empty success.
  */
 
 const PROBE_TTL_MS = 60_000;
@@ -24,7 +16,7 @@ let probe = { at: 0, value: null };
 
 function noModel() {
   return Object.assign(
-    new Error('no model is available for this format: start Ollama (ollama serve) and pull a model, or set OPENAI_API_KEY; the deterministic formats do not need either'),
+    new Error('no model is available for this format: start Ollama (ollama serve) and pull a model, or set NAR_BASE_URL/NAR_API_KEY, or set OPENAI_API_KEY; the deterministic formats do not need either'),
     { status: 501, code: 'E_NO_LLM' },
   );
 }
@@ -40,7 +32,6 @@ async function ollamaModel(config) {
     });
     if (response.ok) {
       const body = await response.json();
-      // Sorted, so the same machine picks the same model on every run.
       model = (body.models ?? []).map((entry) => entry?.name).filter(Boolean).sort()[0] ?? null;
     }
   } catch {
@@ -52,6 +43,9 @@ async function ollamaModel(config) {
 
 /** Which backend would answer right now, or null. */
 export async function describeModel(config = {}) {
+  if (config.llmProvider === 'nar' || config.llmProvider === 'nexuss') {
+    return config.narBaseUrl ? { provider: 'nar', model: config.narModel || 'auto' } : null;
+  }
   if (config.llmProvider === 'openai') {
     return config.openaiApiKey ? { provider: 'openai', model: config.openaiModel } : null;
   }
@@ -59,7 +53,7 @@ export async function describeModel(config = {}) {
     const model = await ollamaModel(config);
     return model ? { provider: 'ollama', model } : null;
   }
-  // Auto: local and free first, then a key. Same ladder as search.
+  if (config.narBaseUrl) return { provider: 'nar', model: config.narModel || 'auto' };
   const local = await ollamaModel(config);
   if (local) return { provider: 'ollama', model: local };
   if (config.openaiApiKey) return { provider: 'openai', model: config.openaiModel };
@@ -98,8 +92,6 @@ async function callOllama({ target, messages, schema, config }) {
       model: target.model,
       messages,
       stream: false,
-      // Ollama takes a JSON schema here and constrains generation to it, which
-      // is stronger than asking nicely in the prompt.
       format: schema ?? 'json',
       options: { temperature: 0 },
     }),
@@ -120,13 +112,13 @@ async function callOllama({ target, messages, schema, config }) {
 }
 
 async function callOpenAI({ target, messages, schema, config }) {
-  const url = `${config.openaiBaseUrl.replace(/\/+$/, '')}/chat/completions`;
+  const base = (config.openaiBaseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
+  const url = `${base}/chat/completions`;
+  const headers = { 'content-type': 'application/json' };
+  if (config.openaiApiKey) headers.authorization = `Bearer ${config.openaiApiKey}`;
   const send = async (responseFormat) => fetch(url, {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${config.openaiApiKey}`,
-    },
+    headers,
     body: JSON.stringify({
       model: target.model,
       messages,
@@ -139,8 +131,6 @@ async function callOpenAI({ target, messages, schema, config }) {
   let response = await send(schema
     ? { type: 'json_schema', json_schema: { name: 'result', schema, strict: false } }
     : { type: 'json_object' });
-  // A compatible endpoint that does not know `json_schema` gets the older,
-  // weaker mode rather than a failure; the schema is still in the prompt.
   if (response.status === 400 && schema) {
     response = await send({ type: 'json_object' });
   }
@@ -158,12 +148,48 @@ async function callOpenAI({ target, messages, schema, config }) {
   };
 }
 
+async function callNAR({ target, messages, schema, config }) {
+  const base = (config.narBaseUrl || '').replace(/\/+$/, '');
+  const url = base.endsWith('/api/v1') ? `${base}/chat/completions` : `${base}/api/v1/chat/completions`;
+  const headers = { 'content-type': 'application/json' };
+  const key = config.narApiKey || config.openaiApiKey;
+  if (key) headers.authorization = `Bearer ${key}`;
+
+  const send = async (responseFormat) => fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model: target.model,
+      messages,
+      temperature: 0,
+      response_format: responseFormat,
+    }),
+    signal: AbortSignal.timeout(config.llmTimeoutMs ?? 90_000),
+  });
+
+  let response = await send(schema
+    ? { type: 'json_schema', json_schema: { name: 'result', schema, strict: false } }
+    : { type: 'json_object' });
+  if (response.status === 400 && schema) {
+    response = await send({ type: 'json_object' });
+  }
+  if (!response.ok) {
+    const text = (await response.text()).slice(0, 300);
+    throw Object.assign(new Error(`NAR answered ${response.status}: ${text}`), {
+      status: 502,
+      code: 'E_LLM_FAILED',
+    });
+  }
+  const body = await response.json();
+  return {
+    content: body.choices?.[0]?.message?.content ?? '',
+    tokensUsed: body.usage?.total_tokens,
+    route: body.route || null,
+  };
+}
+
 /**
  * One request that must answer with an object.
- *
- * The schema is passed to the backend as a constraint where the backend
- * supports one, and is also spelled out in the prompt, because a compatible
- * endpoint may implement either or neither.
  */
 export async function chatJson({ system, prompt, schema, config = {} }) {
   const target = await describeModel(config);
@@ -179,7 +205,9 @@ export async function chatJson({ system, prompt, schema, config = {} }) {
 
   const result = target.provider === 'ollama'
     ? await callOllama({ target, messages, schema, config })
-    : await callOpenAI({ target, messages, schema, config });
+    : target.provider === 'nar'
+      ? await callNAR({ target, messages, schema, config })
+      : await callOpenAI({ target, messages, schema, config });
 
   return {
     json: jsonFrom(result.content),
@@ -219,7 +247,33 @@ export async function chatText({ system, prompt, config = {} }) {
     };
   }
 
-  const response = await fetch(`${config.openaiBaseUrl.replace(/\/+$/, '')}/chat/completions`, {
+  if (target.provider === 'nar') {
+    const base = (config.narBaseUrl || '').replace(/\/+$/, '');
+    const url = base.endsWith('/api/v1') ? `${base}/chat/completions` : `${base}/api/v1/chat/completions`;
+    const headers = { 'content-type': 'application/json' };
+    const key = config.narApiKey || config.openaiApiKey;
+    if (key) headers.authorization = `Bearer ${key}`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ model: target.model, messages, temperature: 0 }),
+      signal: AbortSignal.timeout(config.llmTimeoutMs ?? 90_000),
+    });
+    if (!response.ok) {
+      const text = (await response.text()).slice(0, 300);
+      throw Object.assign(new Error(`NAR answered ${response.status}: ${text}`), { status: 502, code: 'E_LLM_FAILED' });
+    }
+    const body = await response.json();
+    return {
+      text: String(body.choices?.[0]?.message?.content ?? '').trim(),
+      tokensUsed: body.usage?.total_tokens,
+      provider: 'nar',
+      model: target.model,
+    };
+  }
+
+  const base = (config.openaiBaseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
+  const response = await fetch(`${base}/chat/completions`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${config.openaiApiKey}` },
     body: JSON.stringify({ model: target.model, messages, temperature: 0 }),

@@ -125,6 +125,53 @@ paths:
         '413': { $ref: '#/components/responses/TooLarge' }
         '504': { $ref: '#/components/responses/Timeout' }
         '502': { $ref: '#/components/responses/Upstream' }
+  /v2/parse:
+    post:
+      security:
+        - bearerAuth: []
+      operationId: parse
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: File to parse (PDF, DOCX, XLSX, XLS, ODT, RTF).
+          application/json:
+            schema: { $ref: '#/components/schemas/ParseRequest' }
+      responses:
+        '200':
+          description: Parsed document as markdown with metadata.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ParseResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+        '502': { $ref: '#/components/responses/Upstream' }
+  /v2/download:
+    post:
+      security:
+        - bearerAuth: []
+      operationId: download
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DownloadRequest' }
+      responses:
+        '200':
+          description: Download job created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DownloadResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 components:
   responses:
     # One definition per status, referenced from every operation that can
@@ -264,6 +311,69 @@ components:
         document: { type: object }
         warnings: { type: array, items: { type: string } }
         timing: { type: object }
+    ParseRequest:
+      type: object
+      description: File to parse via multipart/form-data or JSON body.
+      properties:
+        base64:
+          type: string
+          description: Base64-encoded file content.
+        filename:
+          type: string
+          description: Original filename with extension.
+        mimeType:
+          type: string
+          description: MIME type hint.
+        url:
+          type: string
+          description: URL to fetch and parse (must be public).
+    ParseResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            markdown:
+              type: string
+            html:
+              type: string
+            metadata:
+              type: object
+              properties:
+                fileName: { type: string }
+                fileType: { type: string }
+                pageCount: { type: integer }
+                sheetCount: { type: integer }
+                title: { type: string }
+                sourceURL: { type: string }
+    DownloadRequest:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          description: Seed URL to map and scrape.
+        limit:
+          type: integer
+          description: Max pages to download. Default 100.
+        sitemap:
+          type: string
+          enum: [include, skip, only]
+          default: include
+        formats:
+          type: array
+          items: { type: string }
+          default: ["markdown"]
+    DownloadResponse:
+      type: object
+      required: [success, id, url]
+      properties:
+        success: { type: boolean }
+        id: { type: string }
+        url: { type: string, description: Status URL to poll. }
     ErrorResponse:
       type: object
       description: >-

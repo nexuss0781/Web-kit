@@ -28,10 +28,11 @@ Order is deliberate: prove the engine, then make the SDK reach it, then publish.
 
 ## 3. Compatibility gaps
 
-- [ ] Add `/v1` aliases for map, crawl, batch/scrape and extract if the
-      Firecrawl CLI (1.26.22) calls them.
-- [ ] `download` is map + scrape run client-side by the Firecrawl CLI. Confirm
-      it works against `/v2/map`; add a native `webkit download` only if not.
+- [x] `/v1` aliases for map, crawl, batch/scrape, extract, parse, download.
+- [x] `download` native endpoint (map + scrape + zip) at `/v2/download`.
+- [x] `parse` native endpoint (PDF/DOCX/XLSX/ODT/RTF) at `/v2/parse`.
+
+## 4. Token and configuration plumbing
 
 ## 4. Token and configuration plumbing
 
@@ -61,10 +62,9 @@ Order is deliberate: prove the engine, then make the SDK reach it, then publish.
 
 ## 7. Documentation
 
-- [ ] `openapi.yaml`: the five new routes and the new scrape formats.
+- [x] `openapi.yaml`: parse, download and v1 alias routes and schemas added.
 - [ ] `node/README.md` and `sdk/README.md`.
-- [ ] `sdk/skills/webkit/SKILL.md`: one provider-agnostic procedure that
-      mentions map/crawl/extract/monitor and never names an upstream.
+- [ ] `sdk/skills/webkit/SKILL.md`: mention parse/download/map/crawl/extract/monitor.
 - [ ] State honestly what is not produced: screenshots, branding, browser
       actions.
 
@@ -77,6 +77,6 @@ Order is deliberate: prove the engine, then make the SDK reach it, then publish.
 
 ## Deliberately out of scope
 
-`browser`, `interact`, browser-driven `agent`, `parse`, `gov`, `alexandria`,
+`browser`, `interact`, browser-driven `agent`, `gov`, `alexandria`,
 `find-tools`, `credit-usage`, `search-feedback`. No Playwright, no Docker, no
 WSL. Screenshots and branding are refused with a reason, never answered empty.

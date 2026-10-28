@@ -21,6 +21,8 @@ import { v2Map } from './map.js';
 import { v2CrawlStart, v2CrawlStatus, v2CrawlCancel } from './crawl.js';
 import { v2BatchStart, v2BatchStatus, v2BatchCancel } from './batch-scrape.js';
 import { v2ExtractStart, v2ExtractStatus, v2ExtractCancel } from './extract.js';
+import { v2Parse } from './parse.js';
+import { v2DownloadStart, v2DownloadStatus, v2DownloadCancel, v2DownloadFile } from './download.js';
 import {
   startScheduler,
   stopScheduler,
@@ -172,7 +174,7 @@ export function makeRoutes(config) {
       routes: [
         '/healthz', '/readyz', '/v1/providers', '/v1/search', '/v1/fetch',
         '/v2/search', '/v2/scrape', '/v2/map', '/v2/crawl', '/v2/batch/scrape',
-        '/v2/extract', '/v2/monitor', '/v2/search/developer',
+        '/v2/extract', '/v2/parse', '/v2/download', '/v2/monitor', '/v2/search/developer',
       ],
       providers: describeProviders(config),
       auth_required: Boolean(config.apiToken),
@@ -264,6 +266,19 @@ export function makeRoutes(config) {
   'POST /v2/crawl': async (_query, _url, body) => ({ status: 200, json: await v2CrawlStart(body, config) }),
   'POST /v2/batch/scrape': async (_query, _url, body) => ({ status: 200, json: await v2BatchStart(body, config) }),
   'POST /v2/extract': async (_query, _url, body) => ({ status: 200, json: await v2ExtractStart(body, config) }),
+  'POST /v2/parse': async (_query, _url, body, req) => ({ status: 200, json: await v2Parse(body, req, config) }),
+  'POST /v2/download': async (_query, _url, body) => ({ status: 200, json: await v2DownloadStart(body, config) }),
+
+  // v1 aliases
+  'POST /v1/scrape': async (_query, _url, body) => ({ status: 200, json: await v2Scrape(body, config) }),
+  'GET /v1/search': async (_query, url) => ({ status: 200, json: await v2Search(paramsAsBody(url, LIST_PARAMS), config) }),
+  'POST /v1/search': async (_query, _url, body) => ({ status: 200, json: await v2Search(body, config) }),
+  'POST /v1/map': async (_query, _url, body) => ({ status: 200, json: await v2Map(body, config) }),
+  'POST /v1/crawl': async (_query, _url, body) => ({ status: 200, json: await v2CrawlStart(body, config) }),
+  'POST /v1/batch/scrape': async (_query, _url, body) => ({ status: 200, json: await v2BatchStart(body, config) }),
+  'POST /v1/extract': async (_query, _url, body) => ({ status: 200, json: await v2ExtractStart(body, config) }),
+  'POST /v1/parse': async (_query, _url, body, req) => ({ status: 200, json: await v2Parse(body, req, config) }),
+  'POST /v1/download': async (_query, _url, body) => ({ status: 200, json: await v2DownloadStart(body, config) }),
 
   // Monitors answer their own shapes, so the route is the handler.
   'GET /v2/monitor': async (_query, url) => v2MonitorList(Object.fromEntries(url.searchParams), config),
@@ -293,12 +308,24 @@ const JOB_ID = '([A-Za-z0-9_-]{1,120})';
 const DYNAMIC_ROUTES = [
   { method: 'GET', pattern: new RegExp(`^/v2/crawl/${JOB_ID}$`), handler: (m, _q, _b, c) => v2CrawlStatus(m[1], c) },
   { method: 'DELETE', pattern: new RegExp(`^/v2/crawl/${JOB_ID}$`), handler: (m, _q, _b, c) => v2CrawlCancel(m[1], c) },
+  { method: 'GET', pattern: new RegExp(`^/v1/crawl/${JOB_ID}$`), handler: (m, _q, _b, c) => v2CrawlStatus(m[1], c) },
+  { method: 'DELETE', pattern: new RegExp(`^/v1/crawl/${JOB_ID}$`), handler: (m, _q, _b, c) => v2CrawlCancel(m[1], c) },
 
   { method: 'GET', pattern: new RegExp(`^/v2/batch/scrape/${JOB_ID}$`), handler: (m, _q, _b, c) => v2BatchStatus(m[1], c) },
   { method: 'DELETE', pattern: new RegExp(`^/v2/batch/scrape/${JOB_ID}$`), handler: (m, _q, _b, c) => v2BatchCancel(m[1], c) },
+  { method: 'GET', pattern: new RegExp(`^/v1/batch/scrape/${JOB_ID}$`), handler: (m, _q, _b, c) => v2BatchStatus(m[1], c) },
+  { method: 'DELETE', pattern: new RegExp(`^/v1/batch/scrape/${JOB_ID}$`), handler: (m, _q, _b, c) => v2BatchCancel(m[1], c) },
 
   { method: 'GET', pattern: new RegExp(`^/v2/extract/${JOB_ID}$`), handler: (m, _q, _b, c) => v2ExtractStatus(m[1], c) },
   { method: 'DELETE', pattern: new RegExp(`^/v2/extract/${JOB_ID}$`), handler: (m, _q, _b, c) => v2ExtractCancel(m[1], c) },
+  { method: 'GET', pattern: new RegExp(`^/v1/extract/${JOB_ID}$`), handler: (m, _q, _b, c) => v2ExtractStatus(m[1], c) },
+  { method: 'DELETE', pattern: new RegExp(`^/v1/extract/${JOB_ID}$`), handler: (m, _q, _b, c) => v2ExtractCancel(m[1], c) },
+  { method: 'GET', pattern: new RegExp(`^/v2/download/${JOB_ID}$`), handler: (m, _q, _b, c) => v2DownloadStatus(m[1], c) },
+  { method: 'DELETE', pattern: new RegExp(`^/v2/download/${JOB_ID}$`), handler: (m, _q, _b, c) => v2DownloadCancel(m[1], c) },
+  { method: 'GET', pattern: new RegExp(`^/v2/download/${JOB_ID}/file$`), handler: (m, _q, _b, c) => v2DownloadFile(m[1], c) },
+  { method: 'GET', pattern: new RegExp(`^/v1/download/${JOB_ID}$`), handler: (m, _q, _b, c) => v2DownloadStatus(m[1], c) },
+  { method: 'DELETE', pattern: new RegExp(`^/v1/download/${JOB_ID}$`), handler: (m, _q, _b, c) => v2DownloadCancel(m[1], c) },
+  { method: 'GET', pattern: new RegExp(`^/v1/download/${JOB_ID}/file$`), handler: (m, _q, _b, c) => v2DownloadFile(m[1], c) },
 
   { method: 'GET', pattern: new RegExp(`^/v2/monitor/${JOB_ID}$`), handler: (m, _q, _b, c) => v2MonitorGet(m[1], c) },
   { method: 'PATCH', pattern: new RegExp(`^/v2/monitor/${JOB_ID}$`), handler: (m, _q, b, c) => v2MonitorUpdate(m[1], b, c) },
@@ -364,6 +391,15 @@ export function createServer(configOverride) {
       const result = dynamic
         ? await dynamic.route.handler(dynamic.match, query, body, active)
         : await route(query, url, body);
+      // Some handlers return a raw body (e.g. file downloads) instead of JSON.
+      if (result.body !== undefined) {
+        response.writeHead(result.status, {
+          'content-type': result.headers?.['content-type'] ?? 'application/octet-stream',
+          ...result.headers,
+        });
+        response.end(Buffer.isBuffer(result.body) ? result.body : Buffer.from(result.body));
+        return;
+      }
       return sendJson(response, result.status, result.json);
     } catch (error) {
       if (isCompat) {

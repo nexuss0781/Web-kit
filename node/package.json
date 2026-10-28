@@ -15,5 +15,14 @@
   "files": [
     "src",
     "README.md"
-  ]
+  ],
+  "dependencies": {
+    "archiver": "^8.0.0",
+    "jszip": "^3.10.2",
+    "mammoth": "^1.13.0",
+    "pdf-parse": "^2.4.5",
+    "rtf-parser": "^1.3.3",
+    "unzipper": "^0.12.5",
+    "xlsx": "^0.18.5"
+  }
 }
